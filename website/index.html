@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+
+  <!-- Primary SEO -->
+  <title>SecNote — write your secret</title>
+  <meta name="description" content="One-time E2EE notes. AES-256-GCM browser-side encryption. Zero-knowledge relay. Burn after read. No account required.">
+  <meta name="keywords" content="encrypted notes, one-time note, E2EE, zero-knowledge, AES-256-GCM, secure message, burn after read, self-destructing note, private sharing, secret note, pastebin encrypted">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
+  <meta name="application-name" content="SecNote">
+
+  <!-- Open Graph — Facebook, Telegram, Signal, WhatsApp, iMessage, Slack, Discord -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="SecNote — write your secret">
+  <meta property="og:description" content="One-time E2EE notes. AES-256-GCM browser-side encryption. Zero-knowledge relay. Burn after read. No account required.">
+  <meta property="og:site_name" content="SecNote">
+  <meta property="og:locale" content="en_US">
+
+  <!-- Twitter / X Card -->
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="SecNote — write your secret">
+  <meta name="twitter:description" content="One-time E2EE notes. AES-256-GCM browser-side encryption. Zero-knowledge relay. Burn after read.">
+
+  <!-- PWA -->
+  <meta name="theme-color" content="#111122" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f5f4ef" media="(prefers-color-scheme: light)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SecNote">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Icons -->
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" sizes="180x180" href="logo.svg">
+
+  <!-- JSON-LD 1: WebApplication — for search engines and AI crawlers -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "@id": "[[HOST_URL]]/#app",
+    "name": "SecNote",
+    "alternateName": "Secure Note",
+    "description": "Zero-knowledge one-time encrypted notes. Notes are encrypted client-side with AES-256-GCM using the browser WebCrypto API before transmission. The decryption key lives only in the URL fragment and is never sent to the server. Notes self-destruct immediately and permanently after the first read. No account, no tracking, no disk writes.",
+    "url": "[[HOST_URL]]",
+    "applicationCategory": "SecurityApplication",
+    "applicationSubCategory": "EncryptionApplication",
+    "operatingSystem": "Any",
+    "browserRequirements": "Requires JavaScript and WebCrypto API (supported by all modern browsers)",
+    "inLanguage": ["en","ru","uk","de","es","fr","pt","ar","bn","zh","hi","ur"],
+    "isAccessibleForFree": true,
+    "privacyPolicy": "/#pp",
+    "featureList": [
+      "End-to-end encryption with AES-256-GCM",
+      "Zero-knowledge relay — server never sees plaintext",
+      "Decryption key lives only in the URL fragment, never transmitted",
+      "Burn after read — note permanently deleted on first open",
+      "RAM-only storage — no database, no disk writes",
+      "No account or sign-up required",
+      "Proof-of-Work anti-spam protection",
+      "Self-hostable open-source backend",
+      "Multilingual interface — 12 languages",
+      "GDPR compliant — no cookies, no tracking, no PII collected"
+    ],
+    "softwareVersion": "1.0",
+    "license": "https://github.com/pwn-all/secure-notes/blob/main/LICENSE",
+    "author": {
+      "@type": "Organization",
+      "@id": "https://pwn-all.com/",
+      "name": "pwn-all.com"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "@id": "https://pwn-all.com/"
+    },
+    "image": {
+      "@type": "ImageObject",
+      "url": "[[HOST_URL]]/og.svg",
+      "width": 1200,
+      "height": 630
+    },
+    "logo": {
+      "@type": "ImageObject",
+      "url": "[[HOST_URL]]/logo.svg",
+      "width": 80,
+      "height": 80
+    },
+    "screenshot": "[[HOST_URL]]/og.svg",
+    "potentialAction": {
+      "@type": "CreateAction",
+      "name": "Create encrypted note",
+      "target": {
+        "@type": "EntryPoint",
+        "urlTemplate": "[[HOST_URL]]/",
+        "actionPlatform": [
+          "https://schema.org/DesktopWebPlatform",
+          "https://schema.org/MobileWebPlatform"
+        ]
+      }
+    }
+  }
+  </script>
+
+  <!-- JSON-LD 3: FAQPage — for rich search results and AI agents -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "Can the server read my note?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Notes are encrypted with AES-256-GCM entirely in your browser before any data is sent. The decryption key lives only in the URL fragment (#), which browsers never include in HTTP requests. The server stores only the encrypted ciphertext and a note ID — it is technically incapable of reading the plaintext."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens after a note is read?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The note is permanently and atomically deleted from the server the moment it is opened. It cannot be recovered or read again by anyone, including the service operator."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is SecNote free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. SecNote is completely free with no account, no sign-up, and no tracking."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Can I self-host SecNote on my own server?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. The frontend is a single static HTML file. If you host it on the same domain as the backend, it uses that API automatically. Use ?api=https://your-host only for a local copy or a separate frontend host."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is my data stored on disk?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Notes are stored exclusively in server RAM. There are no database writes and no disk persistence. A server restart drops all notes instantly, by design."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is SecNote GDPR compliant?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. SecNote collects no personally identifiable information, sets no cookies, and performs no user tracking. Server access logs are retained for up to 7 days for security purposes only. Data subject rights requests can be submitted to [[EMAIL]]."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How long does a note last?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Notes self-destruct on first read or after the TTL you choose (12 or 24 hours), whichever comes first. A server restart also clears all notes immediately."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What encryption does SecNote use?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "AES-256-GCM authenticated encryption via the browser's native WebCrypto API. Each note gets a fresh 256-bit random key. The key is never transmitted to the server — it lives only in the URL fragment after #."
+        }
+      }
+    ]
+  }
+  </script>
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ══════════════════════════════════════
+     NAV
+══════════════════════════════════════ -->
+<nav class="nav" role="navigation" aria-label="Main">
+  <div class="nav-inner">
+
+    <div class="brand" aria-label="SecNote home">
+      <!-- hand-drawn lock icon -->
+      <svg class="lock-icon" width="18" height="20" viewBox="0 0 18 20" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 9 L3 17 L15 17 L15 9 Z"/>
+        <path d="M5.5 9 Q5 4 9 4 Q13 4 12.5 9" opacity="0.85"/>
+        <circle cx="9" cy="13" r="1.2" fill="currentColor"/>
+      </svg>
+      <span class="brand-name">secure note</span>
+    </div>
+
+    <div class="nav-right">
+      <!-- API badge: green dot + url, click to open settings -->
+      <button class="api-badge" id="apiBadge" title="API settings" aria-haspopup="dialog">
+        <span class="dot" id="apiDot" aria-hidden="true"></span>
+        <span class="api-label" aria-hidden="true">api:</span>
+        <span class="api-host" id="apiHost">—</span>
+      </button>
+
+      <!-- Language picker -->
+      <div class="lang-wrap" id="langWrap">
+        <button class="lang-btn sk" id="langBtn" aria-label="Select language" aria-haspopup="listbox">
+          <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
+               stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+            <circle cx="7" cy="7" r="5.5"/>
+            <path d="M7 1.5 C5.2 3.5 5.2 10.5 7 12.5"/>
+            <path d="M7 1.5 C8.8 3.5 8.8 10.5 7 12.5"/>
+            <path d="M1.5 7 h11"/>
+          </svg>
+          <span id="langCode">en</span>
+        </button>
+        <ul class="lang-menu hidden" id="langMenu" role="listbox" aria-label="Select language">
+          <li role="option" data-lang="en">English</li>
+          <li role="option" data-lang="de">Deutsch</li>
+          <li role="option" data-lang="es">Español</li>
+          <li role="option" data-lang="fr">Français</li>
+          <li role="option" data-lang="pt">Português</li>
+          <li role="option" data-lang="ru">Русский</li>
+          <li role="option" data-lang="ua">Українська</li>
+          <li role="option" data-lang="ar">العربية</li>
+          <li role="option" data-lang="bn">বাংলা</li>
+          <li role="option" data-lang="cn">中文</li>
+          <li role="option" data-lang="hi">हिन्दी</li>
+          <li role="option" data-lang="ur">اردو</li>
+        </ul>
+      </div>
+
+      <!-- Settings -->
+      <button class="cog-btn sk" id="cogBtn" aria-label="Settings" aria-haspopup="dialog">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none"
+             stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+          <line x1="1" y1="3.5" x2="9.5" y2="3.5"/>
+          <line x1="12.5" y1="3.5" x2="14" y2="3.5"/>
+          <circle cx="11" cy="3.5" r="1.5"/>
+          <line x1="1" y1="7.5" x2="3.5" y2="7.5"/>
+          <line x1="6.5" y1="7.5" x2="14" y2="7.5"/>
+          <circle cx="5" cy="7.5" r="1.5"/>
+          <line x1="1" y1="11.5" x2="7.5" y2="11.5"/>
+          <line x1="10.5" y1="11.5" x2="14" y2="11.5"/>
+          <circle cx="9" cy="11.5" r="1.5"/>
+        </svg>
+      </button>
+    </div>
+
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════
+     SCREEN: Compose
+══════════════════════════════════════ -->
+<main class="screen" id="sCompose">
+  <div class="col">
+
+    <div class="compose-head">
+      <div class="compose-title">
+        <h1 class="h1" data-i18n="COMPOSE_TITLE">create note</h1>
+        <svg class="squig" width="180" height="10" viewBox="0 0 180 10" aria-hidden="true">
+          <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5
+                   Q90,1 100,5 Q110,9 120,5 Q130,1 140,5 Q150,9 160,5 Q170,1 180,5"
+                fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="ttl-row" role="radiogroup" aria-label="Note lifetime">
+        <label class="ttl-chip">
+          <input type="radio" name="ttl" value="43200" checked>
+          <span>12 h</span>
+        </label>
+        <label class="ttl-chip">
+          <input type="radio" name="ttl" value="86400">
+          <span>24 h</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Note textarea -->
+    <div class="note-card sk">
+      <textarea id="noteInput"
+                maxlength="4096"
+                placeholder="your message here…"
+               data-i18n-ph="SECNOTE_UI_13"
+                autocomplete="off"
+                spellcheck="false"
+                aria-label="Secret message"
+                aria-describedby="charTxt"></textarea>
+      <div class="char-wrap" aria-hidden="true">
+        <svg class="ring-svg" width="26" height="26" viewBox="0 0 28 28">
+          <circle cx="14" cy="14" r="10" fill="none" stroke-width="1.2" class="ring-track" pathLength="100"/>
+          <circle id="ringFill" cx="14" cy="14" r="10" fill="none"
+                  stroke-width="2" stroke-linecap="round"
+                  class="ring-fill" transform="rotate(-90 14 14)"
+                  pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
+        </svg>
+        <span class="char-txt" id="charTxt">0 / 4096</span>
+      </div>
+    </div>
+
+    <!-- Status bar + Send button -->
+    <div class="compose-row">
+      <div class="status-side" aria-live="polite" aria-label="Progress">
+        <div class="status-lbl" id="stageLbl">idle</div>
+        <div class="segs sk" id="segs" aria-hidden="true">
+          <div class="seg" id="s1"></div>
+          <div class="seg" id="s2"></div>
+          <div class="seg" id="s3"></div>
+          <div class="seg" id="s4"></div>
+        </div>
+      </div>
+      <div class="send-side">
+        <button class="btn btn-accent sk" id="sendBtn" disabled data-i18n="COMPOSE_SEND_BTN">encrypt &amp; send →</button>
+      </div>
+    </div>
+
+    <div class="open-link-card sk">
+      <div class="open-link-copy">
+        <span class="open-link-kicker" data-i18n="COMPOSE_OPEN_KICKER">got a link already?</span>
+        <p class="open-link-hint" data-i18n="COMPOSE_OPEN_HINT">paste a full shared URL here to open it with this copy, even if you run the frontend locally.</p>
+      </div>
+      <div class="open-link-row">
+        <input type="url"
+               class="open-link-inp"
+               id="openLinkInp"
+               placeholder="https://…/?p=…#secret"
+               autocomplete="off"
+               spellcheck="false"
+               inputmode="url"
+               aria-label="Shared note link">
+        <button class="btn-sm sk" id="openLinkBtn" data-i18n="COMPOSE_OPEN_BTN">open</button>
+      </div>
+      <p class="status-msg open-link-msg" id="openLinkMsg" aria-live="polite"></p>
+    </div>
+
+    <div class="compose-meta">
+      <div class="tagline">
+        <span>e2ee</span><span>·</span><span data-i18n="COMPOSE_TAG_BURN">burn after read</span><span>·</span><span data-i18n="COMPOSE_TAG_RAM">RAM only</span>
+      </div>
+      <p class="pp-line">
+        <span data-i18n="COMPOSE_PP_PREFIX">by sending you accept our</span>
+        <button type="button" class="pp-link" id="ppBtnCompose" data-i18n="COMPOSE_PP_LINK">privacy policy &amp; terms of service</button>
+      </p>
+    </div>
+
+  </div>
+</main>
+
+<!-- ══════════════════════════════════════
+     HOW IT WORKS — visible on compose only
+══════════════════════════════════════ -->
+<section class="how-section" id="howSection" aria-label="How it works">
+  <div class="how-inner">
+
+    <div class="how-head">
+      <h2 class="h2" data-i18n="HOW_SIMPLE_TITLE">how it works</h2>
+      <svg class="squig" width="140" height="10" viewBox="0 0 140 10" aria-hidden="true">
+        <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5 Q90,1 100,5 Q110,9 120,5 Q130,1 140,5"
+              fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+    </div>
+
+    <!-- Tab switcher -->
+    <div class="how-tabs" role="tablist" aria-label="Description level">
+      <button class="how-tab active sk" id="tabSimple"
+              role="tab" aria-selected="true" aria-controls="panelSimple" data-i18n="HOW_TAB_SIMPLE">for everyone</button>
+      <button class="how-tab sk" id="tabTech"
+              role="tab" aria-selected="false" aria-controls="panelTech" data-i18n="HOW_TAB_TECH">technical</button>
+    </div>
+
+    <!-- Plain-language panel -->
+    <div class="how-panel" id="panelSimple" role="tabpanel" aria-labelledby="tabSimple">
+      <ol class="how-steps">
+        <li class="how-step">
+          <span class="step-num mono" aria-hidden="true">01</span>
+          <div class="step-body">
+            <strong data-i18n="HOW_SIMPLE_1_T">write your message</strong>
+            <p data-i18n="HOW_SIMPLE_1_D">type whatever you want to share — a password, a private link, a secret note. no account, no sign-up.</p>
+          </div>
+        </li>
+        <li class="how-step">
+          <span class="step-num mono" aria-hidden="true">02</span>
+          <div class="step-body">
+            <strong data-i18n="HOW_SIMPLE_2_T">get a one-time link</strong>
+            <p data-i18n="HOW_SIMPLE_2_D">your browser scrambles the text locally and gives you a unique link to copy. the server never sees your original message, and it never receives the secret part after <code>#</code>.</p>
+          </div>
+        </li>
+        <li class="how-step">
+          <span class="step-num mono" aria-hidden="true">03</span>
+          <div class="step-body">
+            <strong data-i18n="HOW_SIMPLE_3_T">share it with one person</strong>
+            <p data-i18n="HOW_SIMPLE_3_D">send the full link however you like — chat, email, SMS. without everything after <code>#</code>, nobody can decrypt it. the privacy promise is the same basic idea as secure messengers like Signal: only the device with the key can unlock the message.</p>
+          </div>
+        </li>
+        <li class="how-step">
+          <span class="step-num mono" aria-hidden="true">04</span>
+          <div class="step-body">
+            <strong data-i18n="HOW_SIMPLE_4_T">it self-destructs on read</strong>
+            <p data-i18n="HOW_SIMPLE_4_D">the moment they open it, the note is deleted from the server forever. it can never be read a second time — not even by us.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+
+    <!-- Technical panel -->
+    <div class="how-panel hidden" id="panelTech" role="tabpanel" aria-labelledby="tabTech">
+      <ul class="tech-list">
+        <li class="tech-item">
+          <span class="tech-badge sk">AES-256-GCM</span>
+          <p data-i18n-html="HOW_TECH_1">browser-side encryption via the native <code>WebCrypto</code> API. every note gets a fresh 256-bit AES key. that is a 256-bit classical key space and roughly a 128-bit brute-force margin even against known quantum search attacks. authenticated encryption prevents tampering.</p>
+        </li>
+        <li class="tech-item">
+          <span class="tech-badge sk">zero-knowledge</span>
+          <p data-i18n-html="HOW_TECH_2">the decryption key lives in the URL <code>#fragment</code> — browsers never include the fragment in HTTP requests. the server receives only the encrypted blob and a note ID, so it is technically incapable of reading the plaintext. this is the same end-to-end idea Signal uses, although this app is a one-time-link design rather than a chat protocol.</p>
+        </li>
+        <li class="tech-item">
+          <span class="tech-badge sk">256 + 128 bits</span>
+          <p data-i18n-html=”HOW_TECH_BITS”>the secret or “password” part after <code>#</code> is a random 256-bit key. the shared URL also carries a separate 128-bit note ID in <code>?p=</code>. together the full URL contains 384 bits of identifiers, but only the 256-bit fragment is confidential and required for decryption.</p>
+        </li>
+        <li class="tech-item">
+          <span class="tech-badge sk">RAM-only</span>
+          <p data-i18n-html="HOW_TECH_3">blobs are stored in process memory. no database writes, no disk persistence. a server restart silently drops all notes, by design.</p>
+        </li>
+        <li class="tech-item">
+          <span class="tech-badge sk">PoW anti-spam</span>
+          <p data-i18n-html="HOW_TECH_4">each create request requires a SHA-256 proof-of-work computed in the browser. the target difficulty is set by the server and prevents bulk note creation without increasing latency for honest users.</p>
+        </li>
+        <li class="tech-item">
+          <span class="tech-badge sk">atomic read+delete</span>
+          <p data-i18n="HOW_TECH_5">the server atomically fetches and removes the blob in a single operation — no TOCTOU window. a 404 on fetch is authoritative proof the note is gone.</p>
+        </li>
+        <li class="tech-item">
+          <span class="tech-badge sk">self-hostable</span>
+          <p data-i18n-html="HOW_TECH_SELFHOST">the frontend is a single static HTML file. if you host it on the same domain as the backend, it uses that API automatically. use <code>?api=https://your-host</code> only for a local copy or a separate frontend host.</p>
+        </li>
+      </ul>
+    </div>
+
+    <!-- Run locally -->
+    <div class="local-row">
+      <a class="btn-local sk" id="localBtn"
+         href="https://github.com/pwn-all/secure-notes/releases/latest/download/frontend.zip"
+         target="_blank"
+         rel="noopener noreferrer"
+         title="Download the latest frontend zip from GitHub releases">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"
+             stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <path d="M8 2v9M4 8l4 5 4-5"/>
+          <path d="M2 14h12"/>
+        </svg>
+        <span data-i18n="HOW_RUN_LOCAL_BTN">run it locally</span>
+      </a>
+      <p class="local-hint mono" data-i18n-html="HOW_RUN_LOCAL_HINT">
+        download the frontend zip and open it in any browser.
+        point it at your own server with <code>?api=https://your-host</code>.
+        the encryption key never leaves your device.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     SCREEN: Link generated
+══════════════════════════════════════ -->
+<main class="screen hidden" id="sLink">
+  <div class="col">
+
+    <div class="title-stack">
+      <h1 class="h1" data-i18n="LINK_TITLE">your link is ready ✓</h1>
+      <svg class="squig" width="220" height="10" viewBox="0 0 220 10" aria-hidden="true">
+        <path d="M0,5 Q11,1 22,5 Q33,9 44,5 Q55,1 66,5 Q77,9 88,5
+                 Q99,1 110,5 Q121,9 132,5 Q143,1 154,5 Q165,9 176,5 Q187,1 198,5 Q209,9 220,5"
+              fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+    </div>
+
+    <p class="sub">
+      <span data-i18n="LINK_SUB_PREFIX">copy and send it. opens once. expires in</span> <span id="ttlLbl">24h</span>. <span data-i18n="LINK_SUB_SUFFIX">then it's gone forever.</span>
+    </p>
+
+    <div class="link-box sk">
+      <span class="link-url" id="linkUrl" aria-label="Note link"></span>
+      <button class="btn-sm sk" id="copyBtn" data-i18n="LINK_COPY_BTN">copy</button>
+    </div>
+
+    <div class="link-alt" id="localShareCard" hidden>
+      <div class="link-alt-head">
+        <span class="link-alt-title" data-i18n="LINK_LOCAL_TITLE">open with this local copy</span>
+        <span class="mono muted small" data-i18n="LINK_LOCAL_DEVICE">this device only</span>
+      </div>
+      <a class="link-alt-url" id="localLinkUrl" href="#"></a>
+    </div>
+
+    <p class="key-hint" data-i18n="LINK_KEY_HINT">↑ everything after <code class="key-fragment">#</code> is the key — never sent to server</p>
+
+    <div class="meta-row" role="list">
+      <span role="listitem" id="metaTtl">⏱ 24h</span>
+      <span role="listitem">🔥 1 read</span>
+      <span role="listitem">🔒 e2ee</span>
+      <span role="listitem" id="metaNid"></span>
+    </div>
+
+    <div class="link-acts">
+      <button class="btn btn-ghost sk" id="qrBtn" data-i18n="LINK_QR_BTN">show QR</button>
+      <button class="btn btn-ghost sk" id="newBtn" data-i18n="LINK_NEW_BTN">+ new note</button>
+    </div>
+
+    <div class="qr-wrap hidden" id="qrWrap" aria-label="QR code"></div>
+
+  </div>
+</main>
+
+<!-- ══════════════════════════════════════
+     SCREEN: Recipient gate
+══════════════════════════════════════ -->
+<main class="screen hidden" id="sGate">
+  <div class="col">
+
+    <h1 class="h1" data-i18n="GATE_TITLE">someone sent you a note</h1>
+    <svg class="squig" width="260" height="10" viewBox="0 0 260 10" aria-hidden="true">
+      <path d="M0,5 Q13,1 26,5 Q39,9 52,5 Q65,1 78,5 Q91,9 104,5
+               Q117,1 130,5 Q143,9 156,5 Q169,1 182,5 Q195,9 208,5 Q221,1 234,5 Q247,9 260,5"
+            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </svg>
+
+    <!-- Destruction warning card -->
+    <div class="warn-card sk" role="alert">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+           class="warn-card-icon" aria-hidden="true">
+        <path d="M10 2L18.5 17H1.5L10 2Z"/>
+        <line x1="10" y1="8" x2="10" y2="12"/>
+        <circle cx="10" cy="15" r=".8" fill="currentColor"/>
+      </svg>
+      <div class="warn-card-body">
+        <p>
+          <strong data-i18n="GATE_WARN_TITLE">reading this note will permanently destroy it.</strong>
+        </p>
+        <p class="warn-card-sub" data-i18n="GATE_WARN_SUB">
+          it can only be read <em>once</em>. as soon as you open it, the server deletes it immediately and it cannot be recovered.
+        </p>
+      </div>
+    </div>
+
+    <!-- Encrypted note locked box -->
+    <div class="hatch-box sk" role="img" aria-label="Encrypted note — contents hidden until revealed">
+      <div class="hatch-inner">
+        <svg width="52" height="52" viewBox="0 0 52 52" fill="none"
+             stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
+             opacity=".32" aria-hidden="true">
+          <!-- rough outer circle -->
+          <ellipse cx="26" cy="26" rx="23" ry="22.5"/>
+          <ellipse cx="26" cy="26" rx="23" ry="22.5" opacity=".5" transform="rotate(4 26 26)"/>
+          <!-- lock body (centred in circle) -->
+          <rect x="14" y="24" width="24" height="16" rx="2.5"/>
+          <path d="M18 24Q18 13 26 13Q34 13 34 24"/>
+          <circle cx="26" cy="32" r="2.2" fill="currentColor"/>
+        </svg>
+        <span class="mono muted small" data-i18n="GATE_LOCKED_LABEL">encrypted · one-time access</span>
+      </div>
+    </div>
+
+    <div class="gate-acts">
+      <button class="btn btn-danger sk" id="revealBtn" data-i18n="GATE_REVEAL_BTN">yes, read and destroy →</button>
+      <button class="btn btn-ghost sk" id="notYetBtn" data-i18n="GATE_CANCEL_BTN">not yet</button>
+    </div>
+
+    <p class="status-msg" id="gateMsg" aria-live="polite" aria-atomic="true"></p>
+
+  </div>
+</main>
+
+<!-- ══════════════════════════════════════
+     SCREEN: Reading note
+══════════════════════════════════════ -->
+<main class="screen hidden" id="sRead">
+  <div class="col">
+
+    <div class="read-head">
+      <h1 class="h2" data-i18n="READ_TITLE">here it is.</h1>
+      <span class="burn-timer" id="burnTimer" aria-live="polite"></span>
+    </div>
+    <svg class="squig" width="120" height="10" viewBox="0 0 120 10" aria-hidden="true">
+      <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5 Q90,1 100,5 Q110,9 120,5"
+            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </svg>
+
+    <div class="read-card sk">
+      <textarea id="noteOutput" readonly spellcheck="false" aria-label="Decrypted note content"></textarea>
+    </div>
+
+    <div class="read-acts">
+      <button class="btn btn-ghost sk" id="copyTxtBtn" data-i18n="READ_COPY_BTN">copy text</button>
+      <button class="btn-danger-ol sk" id="burnBtn" data-i18n="READ_BURN_BTN">burn now</button>
+      <div class="spacer"></div>
+      <button class="btn btn-accent sk" id="replyBtn" data-i18n="READ_REPLY_BTN">reply →</button>
+    </div>
+
+    <p class="mono muted small" data-i18n="READ_DESTROYED_HINT">
+      this note has been destroyed on the server. it lives only on this page until you close it.
+    </p>
+
+  </div>
+</main>
+
+<!-- ══════════════════════════════════════
+     SCREEN: Burned / already gone
+══════════════════════════════════════ -->
+<main class="screen hidden" id="sBurned">
+  <div class="col">
+
+    <h1 class="h1" data-i18n="BURNED_TITLE">already gone.</h1>
+    <svg class="squig" width="140" height="10" viewBox="0 0 140 10" aria-hidden="true">
+      <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5 Q90,1 100,5 Q110,9 120,5 Q130,1 140,5"
+            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </svg>
+
+    <p class="sub" data-i18n="BURNED_SUB">
+      this note was already read and destroyed. each note can only be opened once — after that it's gone from the server forever.
+    </p>
+
+    <!-- Destroyed box -->
+    <div class="hatch-box hatch-burned sk" role="img" aria-label="Note has been destroyed">
+      <div class="hatch-inner">
+        <!-- Broken circle icon -->
+        <svg width="48" height="48" viewBox="0 0 48 48" fill="none"
+             stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+             opacity=".28" aria-hidden="true">
+          <path d="M6 24 A18 18 0 0 1 24 6"/>
+          <path d="M24 6 A18 18 0 0 1 42 24"/>
+          <path d="M42 24 A18 18 0 0 1 30 40"/>
+          <path d="M18 40 A18 18 0 0 1 6 24"/>
+          <line x1="22" y1="20" x2="26" y2="28"/>
+          <line x1="26" y1="20" x2="22" y2="28"/>
+        </svg>
+        <span class="h2 muted" data-i18n="BURNED_GONE_LABEL">this note no longer exists</span>
+        <span class="mono muted small" id="burnedId"></span>
+        <span class="mono muted small" data-i18n="BURNED_SELF_DESTRUCT">notes self-destruct immediately after the first read</span>
+      </div>
+    </div>
+
+    <button class="btn btn-ghost sk" id="sendOwnBtn" data-i18n="BURNED_NEW_BTN">send your own note →</button>
+
+  </div>
+</main>
+
+<!-- ══════════════════════════════════════
+     OVERLAY: Settings
+══════════════════════════════════════ -->
+<div class="overlay hidden" id="oSettings" role="dialog" aria-modal="true" aria-labelledby="settTitle">
+  <div class="settings-sheet sk">
+
+    <div class="sheet-head">
+      <h2 class="h2" id="settTitle" data-i18n="SETTINGS_TITLE">settings</h2>
+      <button class="esc-close" id="closeSettings" data-i18n="SETTINGS_CLOSE">esc · close</button>
+    </div>
+
+    <svg class="squig" width="120" height="10" viewBox="0 0 120 10" aria-hidden="true">
+      <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5 Q90,1 100,5 Q110,9 120,5"
+            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </svg>
+
+    <div class="field-block">
+      <label class="field-lbl" for="apiInp" data-i18n="SETTINGS_API_LABEL">api endpoint</label>
+      <p class="field-hint" data-i18n="SETTINGS_API_HINT">where notes are stored. use your own self-hosted instance, or the public one.</p>
+      <input type="url" class="url-inp" id="apiInp"
+             placeholder="https://…"
+             autocomplete="off" spellcheck="false">
+      <div class="api-status-row">
+        <button class="btn-sm" id="defaultBtn" data-i18n="SETTINGS_DEFAULT_BTN">use default API</button>
+        <div class="spacer"></div>
+        <div class="api-reach hidden" id="apiReach">
+          <span class="dot ok" id="reachDot" aria-hidden="true"></span>
+          <span id="reachLbl"></span>
+        </div>
+      </div>
+      <p class="field-hint" data-i18n="SETTINGS_OFFLINE_HINT">
+        this page works fully offline — open the .html locally and point it at any compatible server.
+      </p>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="field-block">
+      <label class="field-lbl">server info</label>
+      <div class="server-stat-grid">
+        <span class="server-stat-lbl">notes</span>
+        <span class="mono small" id="infoNotes">—</span>
+        <span class="server-stat-lbl">ram</span>
+        <span class="mono small" id="infoRam">—</span>
+        <span class="server-stat-lbl">pubkey</span>
+        <span class="mono small server-pubkey-val" id="infoPubKey">[[PUB_KEY]]</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="sheet-foot">
+      <button class="btn btn-accent sk" id="saveSettings" data-i18n="SETTINGS_SAVE">save</button>
+      <button class="btn btn-ghost sk" id="cancelSettings" data-i18n="SETTINGS_CANCEL">cancel</button>
+      <div class="spacer"></div>
+      <span class="mono muted small" data-i18n="SETTINGS_LOCAL_ONLY">stored locally only</span>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     OVERLAY: Privacy Policy & Terms of Service
+══════════════════════════════════════ -->
+<div class="overlay hidden" id="oPP" role="dialog" aria-modal="true" aria-labelledby="ppTitle">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 class="h2" id="ppTitle">Privacy Policy &amp; Terms of Service</h2>
+      <button class="esc-close" id="closePP" data-i18n="PP_CLOSE">× close</button>
+    </div>
+    <div class="modal-body">
+      <p class="pp-date">Last updated: May 2026 &nbsp;·&nbsp; Effective immediately upon use</p>
+
+      <div class="pp-notice" style="display:none">
+        <strong>Self-hosted instance?</strong> This policy was generated from the open-source SecNote template. The operator of <strong>[[HOST]]</strong> is responsible for updating this document to correctly identify themselves as operator, reflect their actual deployment, and comply with applicable regulations in their jurisdiction (GDPR, CCPA, LGPD, etc.).
+      </div>
+
+      <p>These Terms of Service and Privacy Policy ("Agreement") govern your access to and use of SecNote ("Service"), a web application hosted at <strong>[[HOST_URL]]/</strong> and operated by <strong>[[HOST]]</strong> ("Operator", "we", "us", "our"). By using the Service you agree to this Agreement in full. If you do not agree, do not use the Service.</p>
+
+      <!-- ────────── TERMS OF SERVICE ────────── -->
+      <h3 class="pp-section-head">— Terms of Service —</h3>
+
+      <h3>1. Acceptance of Terms</h3>
+      <p>By accessing or using the Service in any way — including browsing the site, creating a note, or reading a note via a shared link — you confirm that you are at least 16 years old (or the applicable age of digital consent in your jurisdiction), that you have read and understood this Agreement, and that you agree to be bound by it.</p>
+
+      <h3>2. Description of Service</h3>
+      <p>SecNote provides a zero-knowledge, end-to-end encrypted, one-time message relay hosted at <strong>[[HOST_URL]]/</strong>. Notes are encrypted client-side in your browser using AES-256-GCM before being transmitted. The decryption key exists only in the URL fragment (<code>#</code>) and is never sent to our servers. Notes are stored exclusively in server RAM and are permanently deleted after the first read or when the TTL expires. The Service is provided free of charge with no guarantee of uptime or availability.</p>
+      <p>The Service additionally supports <strong>cross-instance retrieval</strong>: the frontend may be used to retrieve and decrypt notes whose encrypted ciphertext is stored on a third-party SecNote-compatible server (any server other than <code>[[HOST]]</code>). In such cases, your browser connects to that server to create or retrieve the note, and its availability, retention behavior, and configuration depend on that server's operator.</p>
+
+      <h3>3. User Content</h3>
+      <p>You control the content you create, transmit, receive, or share through the Service. The Operator cannot read, monitor, or moderate note content because of the zero-knowledge architecture. By using the Service, you confirm that:</p>
+      <ul>
+        <li>you have the full legal right to share the content you submit;</li>
+        <li>your content does not violate any applicable law or third-party rights;</li>
+        <li>you will not use the Service to harm, defraud, or harass any person.</li>
+      </ul>
+      <p>Because notes are encrypted end-to-end and unreadable to the Operator, the Service does not perform content review or moderation.</p>
+
+      <h3>4. Prohibited Uses</h3>
+      <p>You agree not to use the Service for any of the following:</p>
+      <ul>
+        <li>Any activity that violates applicable local, national, or international law or regulation;</li>
+        <li>Sharing, distributing, or storing child sexual abuse material or any content that exploits minors;</li>
+        <li>Facilitating fraud, phishing, identity theft, extortion, blackmail, or any other criminal scheme;</li>
+        <li>Distributing malware, ransomware, spyware, exploits, or any harmful code;</li>
+        <li>Harassment, threats, defamation, incitement to violence, or hate speech;</li>
+        <li>Circumventing, disabling, or interfering with security features of the Service;</li>
+        <li>Automated bulk creation of notes, denial-of-service attacks, or abuse of the API;</li>
+        <li>Violating the intellectual property rights of any third party.</li>
+      </ul>
+      <p>The Operator reserves the right to block access from IPs or networks engaged in prohibited use, and to cooperate with law enforcement as required by applicable law.</p>
+
+      <h3>5. Service Characteristics</h3>
+      <p>The Service is provided free of charge and may be unavailable or interrupted from time to time. Notes are stored only in RAM and may be permanently lost on server restart, crash, or network failure without prior notice. <strong>Do not use this Service as your only copy of important information.</strong></p>
+
+      <h3>6. Third-Party Instances</h3>
+      <p>When you connect the frontend to a third-party SecNote-compatible server, note creation and retrieval occur between your browser and that server. The privacy practices, retention settings, availability, and security posture of that server depend on its operator and deployment. Review the instance you choose before using it for sensitive information.</p>
+
+      <h3>7. Abuse Prevention</h3>
+      <p>The Operator may apply rate limits, temporary blocks, or other technical measures to protect the Service from spam, automated abuse, or other prohibited use. Where required by applicable law, we may also respond to lawful requests from public authorities.</p>
+
+      <h3>8. Service Availability &amp; Modifications</h3>
+      <p>The Operator reserves the right to modify, suspend, or discontinue the Service (or any part thereof) at any time, with or without notice. We may update this Agreement at any time. Continued use of the Service after any change constitutes your acceptance of the new terms. We encourage you to review this page periodically.</p>
+
+      <h3>9. Governing Law &amp; Dispute Resolution</h3>
+      <p>This Agreement shall be governed by and construed in accordance with applicable law. Any dispute arising under this Agreement shall be resolved exclusively through binding arbitration or in the competent courts of the Operator's jurisdiction. If any provision of this Agreement is found to be invalid or unenforceable, the remaining provisions shall continue in full force and effect.</p>
+
+      <h3>10. Entire Agreement</h3>
+      <p>This Agreement constitutes the entire agreement between you and the Operator with respect to the Service and supersedes all prior agreements, representations, and understandings.</p>
+
+      <!-- ────────── PRIVACY POLICY ────────── -->
+      <h3 class="pp-section-head">— Privacy Policy —</h3>
+
+      <h3>11. Zero-Knowledge Architecture</h3>
+      <p>All notes are encrypted client-side with AES-256-GCM using the browser's native WebCrypto API before any data is sent to our servers. The encryption key is generated locally and exists only in the URL <code>#fragment</code> — browsers never include the fragment in HTTP requests, so the key is <em>never transmitted to the server</em>. The server stores only: an opaque note ID, the encrypted ciphertext, and a creation timestamp. We are technically incapable of reading note content.</p>
+
+      <h3>12. Data We Collect</h3>
+      <p>We are committed to minimal data collection:</p>
+      <ul>
+        <li><strong>No cookies.</strong> We do not set any cookies.</li>
+        <li><strong>No accounts.</strong> No registration or personal information is required or collected.</li>
+        <li><strong>No tracking.</strong> We do not use analytics services, advertising pixels, or fingerprinting.</li>
+        <li><strong>Anti-spam hashing.</strong> For rate-limiting and spam prevention, a one-way SHA-256 hash of your IP address combined with a rotating server-side salt may be computed transiently in memory. This hash is never stored persistently, cannot be reversed to identify you, and is not shared with third parties.</li>
+        <li><strong>Server logs.</strong> Standard server access logs (IP address, timestamp, HTTP method, response code) may be retained for up to 7 days for security and operational purposes, after which they are automatically deleted.</li>
+      </ul>
+
+      <h3>13. GDPR &amp; Data Subject Rights</h3>
+      <p>If you are located in the European Economic Area (EEA), United Kingdom, or Switzerland, you have the following rights under the General Data Protection Regulation (GDPR) and equivalent legislation:</p>
+      <ul>
+        <li><strong>Right of access</strong> — you may request confirmation of whether we process personal data about you.</li>
+        <li><strong>Right to erasure</strong> — you may request deletion of personal data we hold about you.</li>
+        <li><strong>Right to restriction</strong> — you may request that we restrict processing of your data.</li>
+        <li><strong>Right to object</strong> — you may object to processing based on legitimate interests.</li>
+        <li><strong>Right to data portability</strong> — you may request a copy of your data in a portable format.</li>
+        <li><strong>Right to lodge a complaint</strong> — you have the right to lodge a complaint with your local data protection authority.</li>
+      </ul>
+      <p>Our legal basis for processing server access logs is <strong>legitimate interest</strong> (security, abuse prevention). Because note content is zero-knowledge encrypted, we cannot access or process it — there is no personal data in note content from our perspective. To exercise your rights, contact us at the address below.</p>
+
+      <h3>14. Data Retention</h3>
+      <p>Notes are held in RAM only and are permanently deleted upon first read or TTL expiry, whichever comes first. A server restart deletes all notes immediately. Server access logs are retained for up to 7 days. Anti-spam hashes are transient and never persisted. We do not retain any other personal data.</p>
+
+      <h3>15. Third-Party Instances &amp; Self-Hosting</h3>
+      <p>This instance is hosted at <strong>[[HOST_URL]]/</strong> and operated by <strong>[[HOST]]</strong>. No third-party analytics, advertising, or social tracking services are used on this instance. The Service is open-source and self-hostable. If you operate your own instance, publish a privacy notice that matches your deployment.</p>
+      <p>When you configure the frontend to connect to a third-party API endpoint (via the settings panel or <code>?api=</code> URL parameter), all data exchange for note creation and retrieval occurs directly between your browser and that third-party server. The Operator does not proxy, log, or have visibility into those requests through the default public instance.</p>
+
+      <h3>16. Children's Privacy</h3>
+      <p>The Service is not directed at children under the age of 16 (or the applicable age of digital consent in your jurisdiction). We do not knowingly collect information from children. If you believe a child has used the Service in violation of this policy, please contact us.</p>
+
+      <!-- ────────── CONTACT ────────── -->
+      <h3 class="pp-section-head">— Contact —</h3>
+
+      <h3>17. Contact Information</h3>
+      <p>For any questions, concerns, legal requests (including GDPR data subject requests), abuse reports, or security disclosures regarding this Service, please contact:</p>
+      <p class="pp-contact">
+        <strong>SecNote / [[HOST]]</strong><br>
+        Email: <a href="mailto:[[EMAIL]]" class="pp-email">[[EMAIL]]</a>
+      </p>
+      <p>We aim to respond to all legitimate inquiries within 30 days.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-accent sk" id="acceptPP" data-i18n="PP_ACCEPT">I understand &amp; close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     OVERLAY: API endpoint confirm
+══════════════════════════════════════ -->
+<div class="overlay hidden" id="oApiConfirm" role="dialog" aria-modal="true" aria-labelledby="apiConfirmTitle">
+  <div class="settings-sheet confirm-sheet sk">
+    <div class="sheet-head">
+      <h2 class="h2" id="apiConfirmTitle">external API</h2>
+    </div>
+    <div class="warn-card" role="alert">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+           class="warn-card-icon" aria-hidden="true">
+        <path d="M10 2L18.5 17H1.5L10 2Z"/>
+        <line x1="10" y1="8" x2="10" y2="12"/>
+        <circle cx="10" cy="15" r=".8" fill="currentColor"/>
+      </svg>
+      <div class="warn-card-body">
+        <p><strong>this page will connect to a server that is not this site.</strong></p>
+        <p class="warn-card-sub">notes will be sent to and retrieved from the endpoint below. only continue if you trust it.</p>
+      </div>
+    </div>
+    <div class="api-confirm-url sk">
+      <span class="mono" id="apiConfirmUrl"></span>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn btn-accent sk" id="apiConfirmAccept">continue →</button>
+      <button class="btn btn-ghost sk" id="apiConfirmReject">use default</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay hidden" id="oApiTrust" role="dialog" aria-modal="true" aria-labelledby="apiTrustTitle">
+  <div class="settings-sheet confirm-sheet sk">
+    <div class="sheet-head">
+      <h2 class="h2" id="apiTrustTitle">verify API</h2>
+    </div>
+    <div class="api-trust-info sk">
+      <div class="trust-info-row">
+        <span class="trust-info-label">Endpoint</span>
+        <span class="mono" id="apiTrustUrl"></span>
+      </div>
+      <div class="trust-info-row">
+        <span class="trust-info-label">Public key</span>
+        <span class="mono" id="apiTrustPubkey">checking…</span>
+      </div>
+      <p id="apiTrustKeyWarn" class="trust-key-warn" hidden>⚠ public key changed since last visit</p>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn btn-accent sk" id="apiTrustAccept">Trust &amp; Add →</button>
+      <button class="btn btn-ghost sk" id="apiTrustReject">reject</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay hidden" id="oNoPubkey" role="dialog" aria-modal="true" aria-labelledby="noPubkeyTitle">
+  <div class="settings-sheet confirm-sheet sk">
+    <div class="sheet-head">
+      <h2 class="h2" id="noPubkeyTitle">signing not configured</h2>
+    </div>
+    <div class="warn-card" role="alert">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+           class="warn-card-icon" aria-hidden="true">
+        <path d="M10 2L18.5 17H1.5L10 2Z"/>
+        <line x1="10" y1="8" x2="10" y2="12"/>
+        <circle cx="10" cy="15" r=".8" fill="currentColor"/>
+      </svg>
+      <div class="warn-card-body">
+        <p><strong>server response signing is not enabled.</strong></p>
+        <p class="warn-card-sub">further operation is not possible. contact the server operator to enable response signing (<code>SIGNING_KEY</code>).</p>
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn btn-ghost sk" id="noPubkeyClose">close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     APP SCRIPT
+══════════════════════════════════════ -->
+<script src="qrcode.min.js" defer></script>
+<script src="app.js" defer></script>
+<script src="sw-register.js" defer></script>
+
+</body>
+</html>

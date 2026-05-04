@@ -1,0 +1,85 @@
+# ----------------------
+# Rust
+# ----------------------
+/target/
+**/target/
+
+# Backup files
+**/*.rs.bk
+**/*.rs.bk.*
+
+# Cargo
+Cargo.lock  # keep this for binaries; remove this line if publishing a library
+
+# Rustfmt / Clippy
+**/*.rs.orig
+
+# ----------------------
+# macOS
+# ----------------------
+.DS_Store
+**/.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+
+# macOS temp
+**/.AppleDB
+**/.AppleDesktop
+**/.apdisk
+
+# ----------------------
+# Windows
+# ----------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Windows installer files
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+# ----------------------
+# Editor / IDE temp (common)
+# ----------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----------------------
+# Logs & temp
+# ----------------------
+.env
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+
+# ----------------------
+# Misc
+# ----------------------
+*.lock

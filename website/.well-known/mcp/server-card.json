@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "1",
+  "serverInfo": {
+    "name": "SecNote",
+    "version": "1.0",
+    "description": "Zero-knowledge one-time encrypted note service. AES-256-GCM client-side encryption, burn after read, RAM-only storage. No MCP transport — use the REST API at /api/v1 or the WebMCP browser tools."
+  },
+  "capabilities": {}
+}

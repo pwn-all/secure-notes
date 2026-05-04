@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="#111122"/>
+
+  <!-- Subtle vertical accent bars -->
+  <rect x="0" y="0" width="3" height="630" fill="#3b5b8a" opacity="0.55"/>
+  <rect x="1197" y="0" width="3" height="630" fill="#3b5b8a" opacity="0.55"/>
+
+  <!-- Dot grid pattern (subtle texture) -->
+  <pattern id="dots" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+    <circle cx="20" cy="20" r="1" fill="#ddddf0" opacity="0.04"/>
+  </pattern>
+  <rect width="1200" height="630" fill="url(#dots)"/>
+
+  <!-- Lock icon — centred at (600, 190), scaled from 80×80 viewBox -->
+  <g transform="translate(560, 150) scale(1.25)">
+    <path d="M27 38V29A13 13 0 0 1 53 29V38"
+          fill="none" stroke="#ddddf0" stroke-width="4.5"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="17" y="38" width="46" height="31" rx="7" fill="#ddddf0"/>
+    <circle cx="40" cy="51" r="5" fill="#111122"/>
+    <rect x="37.5" y="51" width="5" height="10" rx="2" fill="#111122"/>
+  </g>
+
+  <!-- Brand name -->
+  <text x="600" y="315"
+        font-family="'Courier New', Courier, monospace"
+        font-size="76" font-weight="400" letter-spacing="-1"
+        fill="#ddddf0" text-anchor="middle">secure note</text>
+
+  <!-- Squiggle underline -->
+  <path d="M440,336 Q451,330 462,336 Q473,342 484,336 Q495,330 506,336
+           Q517,342 528,336 Q539,330 550,336 Q561,342 572,336 Q583,330
+           594,336 Q605,342 616,336 Q627,330 638,336 Q649,342 660,336
+           Q671,330 682,336 Q693,342 704,336 Q715,330 726,336 Q737,342
+           748,336 Q759,330 760,336"
+        fill="none" stroke="#3b5b8a" stroke-width="2.2"
+        stroke-linecap="round" opacity="0.9"/>
+
+  <!-- Tagline -->
+  <text x="600" y="390"
+        font-family="'Courier New', Courier, monospace"
+        font-size="23" fill="#aaa8a0" text-anchor="middle" letter-spacing="0.5">
+    one-time encrypted notes · burn after read
+  </text>
+
+  <!-- Badge row — total width ≈ 576 px, centred at 600 → starts at 312 -->
+  <!-- e2ee: x=312, w=90 -->
+  <rect x="312" y="430" width="90"  height="34" rx="6"
+        fill="none" stroke="#3b5b8a" stroke-width="1.5" opacity="0.8"/>
+  <text x="357" y="453" font-family="'Courier New', Courier, monospace"
+        font-size="14" fill="#6e8fc0" text-anchor="middle">e2ee</text>
+
+  <!-- AES-256-GCM: x=414, w=165 -->
+  <rect x="414" y="430" width="165" height="34" rx="6"
+        fill="none" stroke="#3b5b8a" stroke-width="1.5" opacity="0.8"/>
+  <text x="496" y="453" font-family="'Courier New', Courier, monospace"
+        font-size="14" fill="#6e8fc0" text-anchor="middle">AES-256-GCM</text>
+
+  <!-- zero-knowledge: x=591, w=175 -->
+  <rect x="591" y="430" width="175" height="34" rx="6"
+        fill="none" stroke="#3b5b8a" stroke-width="1.5" opacity="0.8"/>
+  <text x="678" y="453" font-family="'Courier New', Courier, monospace"
+        font-size="14" fill="#6e8fc0" text-anchor="middle">zero-knowledge</text>
+
+  <!-- RAM-only: x=778, w=110 -->
+  <rect x="778" y="430" width="110" height="34" rx="6"
+        fill="none" stroke="#3b5b8a" stroke-width="1.5" opacity="0.8"/>
+  <text x="833" y="453" font-family="'Courier New', Courier, monospace"
+        font-size="14" fill="#6e8fc0" text-anchor="middle">RAM-only</text>
+
+  <!-- Domain -->
+  <text x="600" y="550"
+        font-family="'Courier New', Courier, monospace"
+        font-size="19" fill="#44446a" text-anchor="middle" letter-spacing="2">
+    notes.pwn-all.com
+  </text>
+
+</svg>

@@ -1,0 +1,28 @@
+{
+  "name": "SecNote",
+  "short_name": "SecNote",
+  "description": "Zero-knowledge one-time encrypted notes. AES-256-GCM browser-side encryption. Burn after read.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111122",
+  "theme_color": "#111122",
+  "orientation": "portrait-primary",
+  "categories": ["security", "utilities"],
+  "lang": "en",
+  "icons": [
+    {
+      "src": "logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Note",
+      "short_name": "New",
+      "description": "Create a new encrypted note",
+      "url": "/"
+    }
+  ]
+}

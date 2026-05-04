@@ -1,0 +1,43 @@
+[package]
+name = "secure_notes"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8.9", features = ["http2"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+base64 = "0.22.1"
+ed25519-dalek = "2"
+dotenvy = "0.15"
+http = "1"
+rand = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tower = { version = "0.5.3", features = ["limit"] }
+tower-http = { version = "0.6.8", features = [
+  "fs",
+  "set-header",
+  "compression-br",
+  "compression-gzip",
+  "trace",
+  "timeout",
+  "limit",
+  "cors"
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+debug = 0
+incremental = false

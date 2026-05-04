@@ -1,0 +1,33 @@
+name: Dependabot Rebase on Conflict
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  rebase:
+    name: Rebase conflicting dependabot PRs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Comment @dependabot rebase on conflicting PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr list \
+            --repo "$REPO" \
+            --author "dependabot[bot]" \
+            --state open \
+            --json number,headRefName \
+            --jq '.[].number' \
+          | while read pr; do
+              mergeable=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable')
+              if [ "$mergeable" = "CONFLICTING" ]; then
+                echo "Requesting rebase on PR #$pr"
+                gh pr comment "$pr" --repo "$REPO" --body "@dependabot rebase"
+              fi
+            done
