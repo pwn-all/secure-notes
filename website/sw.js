@@ -16,11 +16,14 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  if (new URL(e.request.url).pathname.startsWith('/api/')) return;
+  if (new URL(e.request.url).pathname.startsWith('/api/')) {
+    e.respondWith(fetch(e.request));
+    return;
+  }
   e.respondWith(
     fetch(e.request)
       .then(r => {
-        if (r.ok) { const clone = r.clone(); caches.open(CACHE).then(c => c.put(e.request, clone)); }
+        if (r.ok) { const clone = r.clone(); caches.open(CACHE).then(c => c.put(e.request, clone)).catch(() => {}); }
         return r;
       })
       .catch(async () => {

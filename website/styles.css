@@ -1018,6 +1018,7 @@ button { cursor: pointer; font: inherit; border: none; outline: none; }
   margin-bottom: 12px;
   color: var(--ink-soft);
 }
+.pp-notice.hidden { display: none; }
 .pp-notice strong { color: var(--ink); }
 .pp-section-head {
   font-size: 0.72rem !important;

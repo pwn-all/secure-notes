@@ -1668,7 +1668,7 @@ function openPP() {
   if (notice) {
     const isLocal = location.protocol === 'file:' || /^localhost(:\d+)?$/.test(location.hostname);
     const show = !isLocal && apiUrl !== normalizeApiUrl(location.origin);
-    notice.style.display = show ? '' : 'none';
+    notice.classList.toggle('hidden', !show);
   }
 }
 
