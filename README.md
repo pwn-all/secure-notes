@@ -7,6 +7,12 @@
 [![Tor Browser](https://img.shields.io/badge/Tor%20Browser-compatible-7D4698.svg)](website/)
 [![Offline](https://img.shields.io/badge/frontend-works%20offline-success.svg)](website/)
 
+![](website/og.svg)
+
+![](table.png)
+
+> [Watch the demo on YouTube](https://www.youtube.com/watch?v=5vwtcVFniRk)
+
 RAM-only service for self-destructing end-to-end encrypted notes.
 
 The server stores only ciphertext — it never sees the key, never touches disk, and atomically destroys the note on first read. Zero configuration required for self-hosting.
@@ -180,6 +186,7 @@ All variables are optional. The server works with defaults.
 | `BAN_SHORT_SECS` | `300` | Short ban (3+ failures) |
 | `BAN_MEDIUM_SECS` | `1800` | Medium ban (6+ failures) |
 | `BAN_LONG_SECS` | `43200` | Long ban (10+ failures) |
+| `SIGNING_KEY` | (random at startup) | Base64url-encoded 32-byte Ed25519 signing key seed. Set this to keep the public key stable across restarts so pinned clients don't need to re-trust after a redeploy |
 | `CLEANUP_INTERVAL_SECS` | `30` | Expired entry cleanup interval |
 | `RATE_INIT_PER_MIN` | `30` | `/api/v1/init` rate limit per IP |
 | `RATE_CREATE_PER_MIN` | `30` | Note creation rate limit per IP |
@@ -198,6 +205,17 @@ x-secnote-sig: <base64url(Ed25519 signature of the raw response body bytes)>
 ```
 
 The server's Ed25519 public key is returned by `GET /info` as `pubkey` (base64url, 32 bytes). The signing key is generated ephemerally at startup — it changes on every restart. The official frontend fetches and caches this key on first connect, then verifies every subsequent response before parsing — meaning a network-level attacker who can intercept TLS (e.g. a corporate proxy with a trusted CA cert) still cannot inject or tamper with API responses.
+
+#### Public key trust model
+
+Because the signing key is ephemeral, the client must learn the server's current public key before it can verify responses. The trust flow works as follows:
+
+1. **First connect** — the client fetches `GET /info` *without* signature verification (`allowUnsigned: true`) to retrieve `pubkey`. This is the only unverified request the client ever makes.
+2. **TOFU storage** — the fetched key is saved in `localStorage` keyed by API origin. All subsequent requests to that origin are verified against the stored key before any response body is parsed.
+3. **Pre-pinning** — if you obtained the public key out-of-band (e.g. from the server's startup log), you can supply it as `<api-url>|<base64url-pubkey>` in the `?api=` query parameter or in the settings panel. The client then skips the TOFU round-trip and trusts only that key from the start.
+4. **Stable key across restarts** — by default the key is regenerated on every restart, which invalidates stored trust. Set the `SIGNING_KEY` environment variable (base64url, 32-byte Ed25519 seed) to keep the public key constant so pinned clients don't need to re-trust after a redeploy.
+
+> **Why this matters:** TLS alone cannot protect you if an attacker controls a trusted CA (e.g. a corporate proxy or a nation-state MitM). Ed25519-signed responses mean that even a forged TLS certificate cannot produce valid signatures — the client will reject tampered or injected responses outright.
 
 ### `GET /api/v1/init?scope=create|view`
 
@@ -247,13 +265,13 @@ Response: `{ "ok": true, "nid": "<base64url>", "expires_at": 1700086400 }`
 Response: `{ "ok": true, "blob": "<base64url(iv ‖ ciphertext ‖ tag)>", "deleted": true }`  
 Gone/expired: `410` with `{ "ok": false, "error": { "code": "gone", "message": "note is gone" } }`
 
-### `GET /stat`
+### `GET /info`
 
-`{ "notes": 42, "ram_usage": "2 mb" }` — anonymous aggregate, no user identifiers.
+`{ "ok": true, "notes": 42, "ram_usage": "2 mb", "pubkey": "<base64url>" }` — anonymous aggregate plus the server's Ed25519 public key. The client fetches this endpoint on first connect to obtain the key for signature verification (see [Public key trust model](#public-key-trust-model) above).
 
 ## Frontend
 
-Static files served from `website/`. The Rust backend handles only `/api/v1/*`, `/stat`, and `/.well-known/api-catalog`; everything else is served by `ServeDir`.
+Static files served from `website/`. The Rust backend handles only `/api/v1/*`, `/info`, and `/.well-known/api-catalog`; everything else is served by `ServeDir`.
 
 | File | Purpose |
 |---|---|
