@@ -1096,6 +1096,35 @@ button { cursor: pointer; font: inherit; border: none; outline: none; }
   color: var(--warn, #b45309);
   margin: 2px 0 0;
 }
+.trust-status {
+  border: 1px solid var(--border-h);
+  border-radius: var(--r);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin: 2px 0 0;
+  padding: 7px 9px;
+}
+.trust-status.ok {
+  background: rgba(58,168,74,.12);
+  border-color: rgba(58,168,74,.42);
+  color: var(--green);
+}
+.trust-status.warn {
+  background: var(--warn-d);
+  border-color: rgba(224,123,32,.42);
+  color: var(--warn);
+}
+.trust-status.err {
+  background: var(--danger-d);
+  border-color: rgba(196,56,56,.45);
+  color: var(--danger);
+}
+.key-diff {
+  background: rgba(196,56,56,.25);
+  color: var(--danger);
+  border-radius: 2px;
+  outline: 1px solid rgba(196,56,56,.4);
+}
 
 /* ── Server info grid (settings panel) ── */
 .server-stat-grid {

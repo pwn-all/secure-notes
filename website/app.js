@@ -537,14 +537,21 @@ function hostedDefaultApi(url = location.href) {
   return normalizeApiUrl(pageDefaultApi(url) || FALLBACK_DEFAULT_API, FALLBACK_DEFAULT_API);
 }
 
-function setApiQueryParam(url, api, pubkeyB64 = null, forceWhenPinned = false) {
+function setApiQueryParam(url, api, pubkeyB64 = null) {
   const pageApi = pageDefaultApi(url);
   const normalizedApi = isSafeApiTransport(api) ? normalizeApiUrl(api, pageApi || DEFAULT_API) : (pageApi || DEFAULT_API);
   const normalizedPubkey = normalizePubkeyB64(pubkeyB64);
   url.searchParams.delete('api');
-  if (!pageApi || normalizedApi !== pageApi || (forceWhenPinned && normalizedPubkey)) {
+  url.searchParams.delete('pin');
+  if (!pageApi || normalizedApi !== pageApi) {
     url.searchParams.set('api', apiConfigString(normalizedApi, normalizedPubkey));
   }
+}
+
+function setPinQueryParam(url, pubkeyB64) {
+  const normalizedPubkey = normalizePubkeyB64(pubkeyB64);
+  url.searchParams.delete('pin');
+  if (normalizedPubkey) url.searchParams.set('pin', normalizedPubkey);
 }
 
 function apiBase(url = apiUrl) {
@@ -782,6 +789,8 @@ async function pingApi(url) {
         setApiPubKey(body.pubkey);
         saveTrustedApi(base, body.pubkey);
       }
+    } else if (apiPubKeyB64 && base === pageDefaultApi()) {
+      saveTrustedApi(base, apiPubKeyB64);
     }
     apiReachable = true;
     setDot('ok');
@@ -1189,24 +1198,27 @@ async function solvePoW(payload) {
 }
 
 function buildHostedShareUrl(nid, keyB64) {
+  const remoteBase = apiBase();
+  if (/^https:\/\//.test(remoteBase) && !isLoopbackHostname(new URL(remoteBase).hostname)) {
+    const url = new URL(remoteBase);
+    url.pathname = '/';
+    url.search = '';
+    url.searchParams.set('p', nid);
+    setPinQueryParam(url, apiPubKeyB64);
+    url.hash = keyB64;
+    return url.toString();
+  }
+
   if (!/^https?:$/.test(location.protocol)) {
-    const remoteBase = apiBase();
-    if (/^https:\/\//.test(remoteBase) && !isLoopbackHostname(new URL(remoteBase).hostname)) {
-      const url = new URL(remoteBase);
-      url.pathname = '/';
-      url.search = '';
-      url.searchParams.set('p', nid);
-      setApiQueryParam(url, apiUrl, apiPubKeyB64, true);
-      url.hash = keyB64;
-      return url.toString();
-    }
     return buildLocalShareUrl(nid, keyB64);
   }
+
   const url = new URL(location.origin);
   url.pathname = '/';
   url.search = '';
   url.searchParams.set('p', nid);
-  setApiQueryParam(url, apiUrl, apiPubKeyB64, true);
+  setApiQueryParam(url, apiUrl, apiPubKeyB64);
+  if (apiBase(url) === remoteBase) setPinQueryParam(url, apiPubKeyB64);
   url.hash = keyB64;
   return url.toString();
 }
@@ -1215,7 +1227,7 @@ function buildLocalShareUrl(nid, keyB64) {
   const url = new URL(location.href);
   url.search = '';
   url.searchParams.set('p', nid);
-  setApiQueryParam(url, apiUrl, apiPubKeyB64, true);
+  setApiQueryParam(url, apiUrl, apiPubKeyB64);
   url.hash = keyB64;
   return url.toString();
 }
@@ -1245,16 +1257,18 @@ function parseSharedLink(raw) {
 
   const rawApiParam = parsed.searchParams.get('api') ||
     (/^https?:$/.test(parsed.protocol) ? parsed.origin : apiUrl);
+  const rawPinParam = parsed.searchParams.get('pin');
   const { urlStr: rawApiUrl, pubkeyB64: linkPubkey } = parseApiConfig(rawApiParam);
   if (!isSafeApiTransport(rawApiUrl)) throw new Error('link API must be HTTPS, or HTTP on localhost');
   if (linkPubkey && !normalizePubkeyB64(linkPubkey)) throw new Error('invalid API public key');
+  if (rawPinParam && !normalizePubkeyB64(rawPinParam)) throw new Error('invalid API pin');
   const derivedApi = normalizeApiUrl(rawApiUrl);
 
   return {
     nid,
     key,
     api: derivedApi,
-    pubkeyB64: normalizePubkeyB64(linkPubkey),
+    pubkeyB64: normalizePubkeyB64(linkPubkey) || normalizePubkeyB64(rawPinParam),
   };
 }
 
@@ -1265,7 +1279,11 @@ async function openSharedLink(raw) {
   url.searchParams.set('p', link.nid);
   const fallbackApi = hostedDefaultApi(url);
   if (link.api && (link.api !== fallbackApi || link.pubkeyB64)) {
-    url.searchParams.set('api', apiConfigString(link.api, link.pubkeyB64));
+    if (link.api === fallbackApi && link.pubkeyB64) {
+      url.searchParams.set('pin', link.pubkeyB64);
+    } else {
+      url.searchParams.set('api', apiConfigString(link.api, link.pubkeyB64));
+    }
   }
   url.hash = link.key;
 
@@ -1801,12 +1819,7 @@ async function showApiConfirmModal(url, pinnedPubkeyB64 = null) {
   if (!proceed) return false;
 
   if (pinnedPubkey) {
-    const verifiedPubkey = await fetchApiPubkey(normalizedUrl, pinnedPubkey);
-    if (verifiedPubkey === pinnedPubkey) {
-      saveTrustedApi(normalizedUrl, pinnedPubkey);
-      setApiPubKey(pinnedPubkey);
-      return true;
-    }
+    return await showPinnedApiTrustResult(normalizedUrl, pinnedPubkey);
   }
 
   // Step 2: fetch now that user confirmed. This is deliberately unsigned for
@@ -1818,13 +1831,97 @@ async function showApiConfirmModal(url, pinnedPubkeyB64 = null) {
   }
   const referencePubkey = storedPubkey || pinnedPubkey;
   const keyChanged = !!referencePubkey && referencePubkey !== fetchedPubkey;
+  const statusClass = keyChanged ? 'err' : 'warn';
+  const statusText = keyChanged
+    ? 'Public key differs from the key trusted before.'
+    : 'No pin was supplied. Trust this public key only if this endpoint is expected.';
 
-  // Use textContent throughout — values are never parsed as HTML.
-  $('apiTrustUrl').textContent = normalizedUrl;
-  $('apiTrustPubkey').textContent = fetchedPubkey || '—';
-  $('apiTrustKeyWarn').hidden = !keyChanged;
+  return await showApiTrustModal({
+    url: normalizedUrl,
+    pubkey: fetchedPubkey,
+    expectedPubkey: keyChanged ? referencePubkey : null,
+    expectedLabel: 'Trusted key',
+    statusClass,
+    statusText,
+    acceptLabel: keyChanged ? 'Trust new key →' : 'Trust & Add →',
+  });
+}
+
+async function showPinnedApiTrustResult(url, pinnedPubkey) {
+  const normalizedUrl = normalizeApiUrl(url);
+  const verifiedPubkey = await fetchApiPubkey(normalizedUrl, pinnedPubkey);
+  if (verifiedPubkey === pinnedPubkey) {
+    return await showApiTrustModal({
+      url: normalizedUrl,
+      pubkey: pinnedPubkey,
+      expectedPubkey: pinnedPubkey,
+      expectedLabel: 'Pinned key',
+      statusClass: 'ok',
+      statusText: 'Pinned public key matches this API.',
+      acceptLabel: 'continue →',
+    });
+  }
+
+  const fetchedPubkey = await fetchApiPubkey(normalizedUrl, null);
+  if (!fetchedPubkey) {
+    showNoPubkeyModal();
+    return false;
+  }
+  await showApiTrustModal({
+    url: normalizedUrl,
+    pubkey: fetchedPubkey,
+    expectedPubkey: pinnedPubkey,
+    expectedLabel: 'Pinned key',
+    statusClass: 'err',
+    statusText: 'Pinned public key does not match this API. The link may point to the wrong server or be intercepted.',
+    allowTrust: false,
+  });
+  return false;
+}
+
+// Returns a DocumentFragment with differing characters wrapped in <span class="key-diff">.
+// Builds DOM nodes directly — never parses untrusted strings as HTML.
+function keyDiffFragment(actual, expected) {
+  const frag = document.createDocumentFragment();
+  const len = Math.max(actual.length, expected.length);
+  for (let i = 0; i < len; i++) {
+    const ca = actual[i] ?? '';
+    const ce = expected[i] ?? '';
+    const node = ca !== ce ? Object.assign(document.createElement('span'), { className: 'key-diff', textContent: ca || '?' })
+                           : document.createTextNode(ca);
+    frag.appendChild(node);
+  }
+  return frag;
+}
+
+async function showApiTrustModal({
+  url,
+  pubkey,
+  expectedPubkey = null,
+  expectedLabel = 'Expected key',
+  statusClass = 'warn',
+  statusText = '',
+  acceptLabel = 'Trust & Add →',
+  allowTrust = true,
+}) {
+  const hasMismatch = expectedPubkey && pubkey && pubkey !== expectedPubkey;
+  $('apiTrustUrl').textContent = url;
+  const pubkeyEl = $('apiTrustPubkey');
+  pubkeyEl.textContent = '';
+  pubkeyEl.appendChild(hasMismatch ? keyDiffFragment(pubkey, expectedPubkey) : document.createTextNode(pubkey || '—'));
+  $('apiTrustExpectedLabel').textContent = expectedLabel;
+  const expectedEl = $('apiTrustExpected');
+  expectedEl.textContent = '';
+  expectedEl.appendChild(hasMismatch ? keyDiffFragment(expectedPubkey, pubkey) : document.createTextNode(expectedPubkey || ''));
+  $('apiTrustExpectedRow').hidden = !expectedPubkey;
+  $('apiTrustStatus').textContent = statusText;
+  $('apiTrustStatus').className = 'trust-status ' + statusClass;
+  $('apiTrustStatus').hidden = !statusText;
+  $('apiTrustKeyWarn').hidden = true;
+  $('apiTrustAccept').textContent = acceptLabel;
+  $('apiTrustAccept').hidden = !allowTrust;
   $('oApiTrust').classList.remove('hidden');
-  setTimeout(() => $('apiTrustAccept').focus(), 40);
+  setTimeout(() => (allowTrust ? $('apiTrustAccept') : $('apiTrustReject')).focus(), 40);
 
   return new Promise(resolve => {
     function done(trusted) {
@@ -1834,12 +1931,12 @@ async function showApiConfirmModal(url, pinnedPubkeyB64 = null) {
       document.removeEventListener('keydown', onKey);
       $('oApiTrust').removeEventListener('click', onBackdrop);
       if (trusted) {
-        saveTrustedApi(normalizedUrl, fetchedPubkey);
-        setApiPubKey(fetchedPubkey);
+        saveTrustedApi(url, pubkey);
+        setApiPubKey(pubkey);
       }
       resolve(trusted);
     }
-    function onAccept() { done(true); }
+    function onAccept() { if (allowTrust) done(true); }
     function onReject() { done(false); }
     function onKey(e) { if (e.key === 'Escape') done(false); }
     function onBackdrop(e) { if (e.target === $('oApiTrust')) done(false); }
@@ -1857,12 +1954,13 @@ async function route() {
   const p = params.get('p');
   const key = location.hash.slice(1);
   const apiP = params.get('api');
+  const pinP = normalizePubkeyB64(params.get('pin'));
 
   if (apiP) {
     const { urlStr: apiPUrl, pubkeyB64: apiPKey } = parseApiConfig(apiP);
     if (isSafeApiTransport(apiPUrl)) {
       apiUrl = normalizeApiUrl(apiPUrl);
-      setApiPubKey(apiPKey);
+      setApiPubKey(apiPKey || pinP);
       clearPowCache();
     }
   } else if (p && key) {
@@ -1871,13 +1969,36 @@ async function route() {
       apiUrl = hostedApi;
       clearPowCache();
     }
+    if (pinP) setApiPubKey(pinP);
   }
 
   updateApiDisplay(apiUrl);
 
-  if (isExternalApi() && apiUrl !== confirmedApiUrl) {
+  if (!isExternalApi() && pinP && apiUrl !== confirmedApiUrl) {
+    const confirmed = await showPinnedApiTrustResult(apiUrl, pinP);
+    if (!confirmed) {
+      if (p && key && NID_RE.test(p) && KEY_RE.test(key)) {
+        curNid = p;
+        curKey = key;
+        show('sGate');
+        setGatePowStatus('error', '⚠ API public key was not trusted');
+      } else {
+        show('sCompose');
+      }
+      return;
+    }
+    confirmedApiUrl = apiUrl;
+  } else if (isExternalApi() && apiUrl !== confirmedApiUrl) {
+    const hadPinnedApi = !!apiPubKeyB64;
     const confirmed = await showApiConfirmModal(apiUrl, apiPubKeyB64);
     if (!confirmed) {
+      if (hadPinnedApi && p && key && NID_RE.test(p) && KEY_RE.test(key)) {
+        curNid = p;
+        curKey = key;
+        show('sGate');
+        setGatePowStatus('error', '⚠ API public key was not trusted');
+        return;
+      }
       apiUrl = hostedDefaultApi();
       setApiPubKey(DEFAULT_API_PUBKEY);
       storageSet(LS_KEY, '');
@@ -1885,6 +2006,7 @@ async function route() {
       updateApiDisplay(apiUrl);
       const cleanUrl = new URL(location.href);
       cleanUrl.searchParams.delete('api');
+      cleanUrl.searchParams.delete('pin');
       history.replaceState(null, '', cleanUrl.toString());
     } else {
       confirmedApiUrl = apiUrl;
