@@ -24,6 +24,7 @@ const AES_GCM_IV_BYTES = 12;
 const AES_GCM_TAG_BYTES = 16;
 const NID_RE = /^[A-Za-z0-9_-]{22}$/;
 const KEY_RE = /^[A-Za-z0-9_-]{43}$/;
+const PUBKEY_RE = KEY_RE;
 const B64U_RE = /^[A-Za-z0-9_-]*$/;
 const CHALLENGE_RE = /^[A-Za-z0-9_-]{32}$/;
 const te = new TextEncoder();
@@ -448,6 +449,10 @@ function apiConfigString(url, pubkeyB64) {
   return pubkeyB64 ? url + '|' + pubkeyB64 : url;
 }
 
+function normalizePubkeyB64(value) {
+  return typeof value === 'string' && PUBKEY_RE.test(value) ? value : null;
+}
+
 function getTrustedApis() {
   try { return JSON.parse(storageGet(LS_TRUSTED_KEY, '{}')); } catch { return {}; }
 }
@@ -457,29 +462,37 @@ function getTrustedPubkey(url) {
   return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
 }
 function saveTrustedApi(url, pubkey) {
+  const normalizedPubkey = normalizePubkeyB64(pubkey);
+  if (!normalizedPubkey) return;
   const map = getTrustedApis();
-  map[normalizeApiUrl(url)] = pubkey ?? '';
+  map[normalizeApiUrl(url)] = normalizedPubkey;
   try { localStorage.setItem(LS_TRUSTED_KEY, JSON.stringify(map)); } catch {}
 }
 
-async function fetchApiPubkey(baseUrl) {
+async function fetchApiPubkey(baseUrl, verifyPubkeyB64 = null) {
+  const expectedPubkey = normalizePubkeyB64(verifyPubkeyB64);
   try {
     const { response, body } = await fetchJson(
       new URL('/info', baseUrl + '/').toString(),
-      { headers: { Accept: 'application/json' }, allowUnsigned: true },
+      {
+        headers: { Accept: 'application/json' },
+        allowUnsigned: !expectedPubkey,
+        verifyPubkeyB64: expectedPubkey,
+      },
       4000
     );
     if (!response.ok || !body?.ok) return null;
-    return typeof body.pubkey === 'string' ? (body.pubkey || '') : '';
+    return normalizePubkeyB64(body.pubkey);
   } catch { return null; }
 }
 
 function isLoopbackHostname(hostname) {
-  const host = String(hostname || '').toLowerCase();
-  return host === 'localhost' ||
-    host === '[::1]' ||
-    host === '::1' ||
-    /^127(?:\.\d{1,3}){3}$/.test(host);
+  const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+  if (host === 'localhost' || host === '[::1]' || host === '::1') return true;
+  const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return false;
+  const octets = match.slice(1).map(Number);
+  return octets[0] === 127 && octets.every(n => Number.isInteger(n) && n >= 0 && n <= 255);
 }
 
 function isSafeApiTransport(raw) {
@@ -506,7 +519,9 @@ function initialApiConfig() {
   const { urlStr, pubkeyB64 } = parseApiConfig(stored);
   const url = (urlStr && isSafeApiTransport(urlStr)) ? normalizeApiUrl(urlStr, DEFAULT_API) : hostedDefaultApi();
   const trusted = getTrustedPubkey(url);
-  const pubkey = trusted !== null ? (trusted || null) : (pubkeyB64 || DEFAULT_API_PUBKEY);
+  const pubkey = trusted !== null
+    ? normalizePubkeyB64(trusted)
+    : (normalizePubkeyB64(pubkeyB64) || normalizePubkeyB64(DEFAULT_API_PUBKEY));
   return { url, pubkeyB64: pubkey };
 }
 
@@ -522,12 +537,13 @@ function hostedDefaultApi(url = location.href) {
   return normalizeApiUrl(pageDefaultApi(url) || FALLBACK_DEFAULT_API, FALLBACK_DEFAULT_API);
 }
 
-function setApiQueryParam(url, api) {
+function setApiQueryParam(url, api, pubkeyB64 = null, forceWhenPinned = false) {
   const pageApi = pageDefaultApi(url);
   const normalizedApi = isSafeApiTransport(api) ? normalizeApiUrl(api, pageApi || DEFAULT_API) : (pageApi || DEFAULT_API);
+  const normalizedPubkey = normalizePubkeyB64(pubkeyB64);
   url.searchParams.delete('api');
-  if (!pageApi || normalizedApi !== pageApi) {
-    url.searchParams.set('api', normalizedApi);
+  if (!pageApi || normalizedApi !== pageApi || (forceWhenPinned && normalizedPubkey)) {
+    url.searchParams.set('api', apiConfigString(normalizedApi, normalizedPubkey));
   }
 }
 
@@ -676,12 +692,18 @@ async function readLimitedText(response, maxBytes = MAX_RESPONSE_BYTES) {
 }
 
 async function fetchJson(url, options = {}, timeoutMs = 7000) {
+  const { allowUnsigned = false, verifyPubkeyB64, ...fetchOptions } = options;
+  const explicitVerificationKey = Object.prototype.hasOwnProperty.call(options, 'verifyPubkeyB64');
+  const rawVerificationKey = explicitVerificationKey ? verifyPubkeyB64 : apiPubKeyB64;
+  const verificationKey = rawVerificationKey ? normalizePubkeyB64(rawVerificationKey) : null;
+  if (rawVerificationKey && !verificationKey) throw new Error('invalid server signing key');
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(url, {
-      ...options,
+      ...fetchOptions,
       cache: 'no-store',
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
@@ -690,14 +712,9 @@ async function fetchJson(url, options = {}, timeoutMs = 7000) {
     });
     const text = await readLimitedText(response);
 
-    if (apiPubKeyB64) {
-      const sigB64 = response.headers.get('x-secnote-sig');
-      if (!sigB64) throw new Error('response signature missing');
-      const sigBytes = fromb64u(sigB64, 64, 'response signature');
-      if (!apiVerifyKey) await loadVerifyKey(apiPubKeyB64);
-      const valid = await crypto.subtle.verify({ name: 'Ed25519' }, apiVerifyKey, sigBytes, te.encode(text));
-      if (!valid) throw new Error('response signature invalid');
-    } else if (!options.allowUnsigned) {
+    if (verificationKey) {
+      await verifyResponseSignature(response, text, verificationKey);
+    } else if (!allowUnsigned) {
       throw Object.assign(new Error('server signing key not configured'), { code: 'no_pubkey' });
     }
 
@@ -759,9 +776,12 @@ async function pingApi(url) {
     if (!response.ok) throw new Error('server error ' + response.status);
     if (seq !== apiCheckSeq || base !== apiBase()) return false;
     updateServerInfo(body);
-    if (!apiPubKeyB64 && typeof body?.pubkey === 'string' && body.pubkey) {
+    if (!apiPubKeyB64 && normalizePubkeyB64(body?.pubkey)) {
       const pageApi = pageDefaultApi();
-      if (pageApi && base === pageApi) setApiPubKey(body.pubkey);
+      if (pageApi && base === pageApi) {
+        setApiPubKey(body.pubkey);
+        saveTrustedApi(base, body.pubkey);
+      }
     }
     apiReachable = true;
     setDot('ok');
@@ -1066,16 +1086,35 @@ async function viewTokenFromKey(keyB64) {
 }
 
 function setApiPubKey(b64) {
-  apiPubKeyB64 = b64 || null;
+  apiPubKeyB64 = normalizePubkeyB64(b64);
   apiVerifyKey = null;
+}
+
+async function importEd25519VerifyKey(b64) {
+  const keyBytes = fromb64u(b64, 32, 'Ed25519 public key');
+  return await crypto.subtle.importKey(
+    'raw', keyBytes, { name: 'Ed25519' }, false, ['verify']
+  );
 }
 
 async function loadVerifyKey(b64) {
   if (!b64) { apiVerifyKey = null; return; }
-  const keyBytes = fromb64u(b64, 32, 'Ed25519 public key');
-  apiVerifyKey = await crypto.subtle.importKey(
-    'raw', keyBytes, { name: 'Ed25519' }, false, ['verify']
-  );
+  apiVerifyKey = await importEd25519VerifyKey(b64);
+}
+
+async function verifyResponseSignature(response, text, pubkeyB64) {
+  const sigB64 = response.headers.get('x-secnote-sig');
+  if (!sigB64) throw new Error('response signature missing');
+  const sigBytes = fromb64u(sigB64, 64, 'response signature');
+  let verifyKey;
+  if (pubkeyB64 === apiPubKeyB64) {
+    if (!apiVerifyKey) await loadVerifyKey(pubkeyB64);
+    verifyKey = apiVerifyKey;
+  } else {
+    verifyKey = await importEd25519VerifyKey(pubkeyB64);
+  }
+  const valid = await crypto.subtle.verify({ name: 'Ed25519' }, verifyKey, sigBytes, te.encode(text));
+  if (!valid) throw new Error('response signature invalid');
 }
 
 function solvePoWWithWorker(payload) {
@@ -1157,6 +1196,7 @@ function buildHostedShareUrl(nid, keyB64) {
       url.pathname = '/';
       url.search = '';
       url.searchParams.set('p', nid);
+      setApiQueryParam(url, apiUrl, apiPubKeyB64, true);
       url.hash = keyB64;
       return url.toString();
     }
@@ -1166,7 +1206,7 @@ function buildHostedShareUrl(nid, keyB64) {
   url.pathname = '/';
   url.search = '';
   url.searchParams.set('p', nid);
-  setApiQueryParam(url, apiUrl);
+  setApiQueryParam(url, apiUrl, apiPubKeyB64, true);
   url.hash = keyB64;
   return url.toString();
 }
@@ -1175,7 +1215,7 @@ function buildLocalShareUrl(nid, keyB64) {
   const url = new URL(location.href);
   url.search = '';
   url.searchParams.set('p', nid);
-  setApiQueryParam(url, apiUrl);
+  setApiQueryParam(url, apiUrl, apiPubKeyB64, true);
   url.hash = keyB64;
   return url.toString();
 }
@@ -1207,13 +1247,14 @@ function parseSharedLink(raw) {
     (/^https?:$/.test(parsed.protocol) ? parsed.origin : apiUrl);
   const { urlStr: rawApiUrl, pubkeyB64: linkPubkey } = parseApiConfig(rawApiParam);
   if (!isSafeApiTransport(rawApiUrl)) throw new Error('link API must be HTTPS, or HTTP on localhost');
+  if (linkPubkey && !normalizePubkeyB64(linkPubkey)) throw new Error('invalid API public key');
   const derivedApi = normalizeApiUrl(rawApiUrl);
 
   return {
     nid,
     key,
     api: derivedApi,
-    pubkeyB64: linkPubkey,
+    pubkeyB64: normalizePubkeyB64(linkPubkey),
   };
 }
 
@@ -1223,7 +1264,7 @@ async function openSharedLink(raw) {
   url.search = '';
   url.searchParams.set('p', link.nid);
   const fallbackApi = hostedDefaultApi(url);
-  if (link.api && link.api !== fallbackApi) {
+  if (link.api && (link.api !== fallbackApi || link.pubkeyB64)) {
     url.searchParams.set('api', apiConfigString(link.api, link.pubkeyB64));
   }
   url.hash = link.key;
@@ -1583,14 +1624,19 @@ $('saveSettings').addEventListener('click', async () => {
     setReach('err', 'API must be HTTPS, or HTTP on localhost');
     return;
   }
+  const normalizedCandidatePubkey = normalizePubkeyB64(candidatePubkey);
+  if (candidatePubkey && !normalizedCandidatePubkey) {
+    setReach('err', 'public key must be a base64url Ed25519 key');
+    return;
+  }
   const nextApi = normalizeApiUrl(candidateUrl);
   closeSettings();
 
   if (isExternalApi(nextApi)) {
-    if (candidatePubkey && nextApi !== confirmedApiUrl) {
+    if (normalizedCandidatePubkey && nextApi !== confirmedApiUrl) {
       // Manual pubkey entered (url|pubkey) — trust directly without modal.
-      setApiPubKey(candidatePubkey);
-      saveTrustedApi(nextApi, candidatePubkey);
+      setApiPubKey(normalizedCandidatePubkey);
+      saveTrustedApi(nextApi, normalizedCandidatePubkey);
       confirmedApiUrl = nextApi;
     } else if (nextApi !== confirmedApiUrl) {
       const confirmed = await showApiConfirmModal(nextApi);
@@ -1734,18 +1780,17 @@ function showExternalApiWarningModal(url) {
   });
 }
 
-async function showApiConfirmModal(url) {
+async function showApiConfirmModal(url, pinnedPubkeyB64 = null) {
   const normalizedUrl = normalizeApiUrl(url);
-  const storedPubkey = getTrustedPubkey(normalizedUrl);
-
-  let prefetchedPubkey = null;
+  const storedPubkey = normalizePubkeyB64(getTrustedPubkey(normalizedUrl));
+  const pinnedPubkey = normalizePubkeyB64(pinnedPubkeyB64);
 
   // Auto-trust: already in trust store — verify pubkey against live /info.
   // User already accepted this API, so the request is justified without re-confirming.
-  if (storedPubkey !== null) {
-    prefetchedPubkey = await fetchApiPubkey(normalizedUrl);
-    if (prefetchedPubkey !== null && storedPubkey === prefetchedPubkey) {
-      if (prefetchedPubkey) setApiPubKey(prefetchedPubkey);
+  if (storedPubkey) {
+    const verifiedPubkey = await fetchApiPubkey(normalizedUrl, storedPubkey);
+    if (verifiedPubkey === storedPubkey) {
+      setApiPubKey(storedPubkey);
       return true;
     }
     // Pubkey changed or /info unreachable — fall through to show modals.
@@ -1755,10 +1800,24 @@ async function showApiConfirmModal(url) {
   const proceed = await showExternalApiWarningModal(normalizedUrl);
   if (!proceed) return false;
 
-  // Step 2: for new APIs, fetch now that user confirmed; for returning APIs with a
-  // changed key, reuse the already-fetched result.
-  const fetchedPubkey = prefetchedPubkey !== null ? prefetchedPubkey : await fetchApiPubkey(normalizedUrl);
-  const keyChanged = storedPubkey !== null && fetchedPubkey !== null && storedPubkey !== fetchedPubkey;
+  if (pinnedPubkey) {
+    const verifiedPubkey = await fetchApiPubkey(normalizedUrl, pinnedPubkey);
+    if (verifiedPubkey === pinnedPubkey) {
+      saveTrustedApi(normalizedUrl, pinnedPubkey);
+      setApiPubKey(pinnedPubkey);
+      return true;
+    }
+  }
+
+  // Step 2: fetch now that user confirmed. This is deliberately unsigned for
+  // new or changed keys; the next modal is the trust decision.
+  const fetchedPubkey = await fetchApiPubkey(normalizedUrl, null);
+  if (!fetchedPubkey) {
+    showNoPubkeyModal();
+    return false;
+  }
+  const referencePubkey = storedPubkey || pinnedPubkey;
+  const keyChanged = !!referencePubkey && referencePubkey !== fetchedPubkey;
 
   // Use textContent throughout — values are never parsed as HTML.
   $('apiTrustUrl').textContent = normalizedUrl;
@@ -1776,7 +1835,7 @@ async function showApiConfirmModal(url) {
       $('oApiTrust').removeEventListener('click', onBackdrop);
       if (trusted) {
         saveTrustedApi(normalizedUrl, fetchedPubkey);
-        if (fetchedPubkey) setApiPubKey(fetchedPubkey);
+        setApiPubKey(fetchedPubkey);
       }
       resolve(trusted);
     }
@@ -1817,7 +1876,7 @@ async function route() {
   updateApiDisplay(apiUrl);
 
   if (isExternalApi() && apiUrl !== confirmedApiUrl) {
-    const confirmed = await showApiConfirmModal(apiUrl);
+    const confirmed = await showApiConfirmModal(apiUrl, apiPubKeyB64);
     if (!confirmed) {
       apiUrl = hostedDefaultApi();
       setApiPubKey(DEFAULT_API_PUBKEY);

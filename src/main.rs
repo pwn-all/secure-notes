@@ -166,9 +166,7 @@ fn host_without_port(authority: &str) -> Option<&str> {
 }
 
 fn valid_port_suffix(suffix: &str) -> bool {
-    suffix
-        .strip_prefix(':')
-        .is_some_and(is_valid_port)
+    suffix.strip_prefix(':').is_some_and(is_valid_port)
 }
 
 fn is_valid_port(port: &str) -> bool {

@@ -16,8 +16,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use ed25519_dalek::{Signer, SigningKey};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use ed25519_dalek::{Signer, SigningKey};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -506,10 +506,9 @@ async fn sign_response_middleware(
     let sig = signing_key.sign(&bytes);
     let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
     if let Ok(val) = HeaderValue::from_str(&sig_b64) {
-        parts.headers.insert(
-            header::HeaderName::from_static("x-secnote-sig"),
-            val,
-        );
+        parts
+            .headers
+            .insert(header::HeaderName::from_static("x-secnote-sig"), val);
     }
 
     Response::from_parts(parts, Body::from(bytes))
@@ -529,7 +528,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/notes", post(create_note_handler))
         .route("/api/v1/notes/{nid}/view", post(view_note_handler))
         .fallback_service(ServeDir::new("website").append_index_html_on_directories(true))
-        .layer(middleware::from_fn_with_state(state.clone(), sign_response_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            sign_response_middleware,
+        ))
         .with_state(state)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .layer(middleware::from_fn(security_headers_middleware))
@@ -936,11 +938,7 @@ async fn view_note_handler(
             return Err(ApiError::new(StatusCode::GONE, "gone", "note is gone"));
         }
         if !constant_time_eq_32(&existing.view_token_hash, &provided_view_token_hash) {
-            return Err(ApiError::new(
-                StatusCode::FORBIDDEN,
-                "invalid_view_token",
-                "view token is invalid",
-            ));
+            return Err(ApiError::new(StatusCode::GONE, "gone", "note is gone"));
         }
         notes
             .remove(&nid)
@@ -1032,6 +1030,11 @@ async fn api_catalog_handler(headers: HeaderMap) -> Response {
 }
 
 fn sanitize_authority(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.len() > 300 || raw.contains('@') || raw.contains('/') {
+        return None;
+    }
+
     let authority = raw.parse::<Authority>().ok()?;
     let value = authority.as_str();
     if value.is_empty()
@@ -1044,7 +1047,75 @@ fn sanitize_authority(raw: &str) -> Option<String> {
     {
         return None;
     }
+    let host = authority_host_without_port(value)?;
+    if !is_valid_authority_host(host) {
+        return None;
+    }
     Some(value.to_ascii_lowercase())
+}
+
+fn authority_host_without_port(authority: &str) -> Option<&str> {
+    if authority.starts_with('[') {
+        let end = authority.find(']')?;
+        let host = &authority[..=end];
+        let suffix = &authority[end + 1..];
+        if suffix.is_empty() || valid_authority_port_suffix(suffix) {
+            return Some(host);
+        }
+        return None;
+    }
+
+    if authority.matches(':').count() > 1 {
+        return None;
+    }
+
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && is_valid_authority_port(port) => Some(host),
+        Some(_) => None,
+        None => Some(authority),
+    }
+}
+
+fn valid_authority_port_suffix(suffix: &str) -> bool {
+    suffix
+        .strip_prefix(':')
+        .is_some_and(is_valid_authority_port)
+}
+
+fn is_valid_authority_port(port: &str) -> bool {
+    !port.is_empty() && port.parse::<u16>().is_ok()
+}
+
+fn is_valid_authority_host(host: &str) -> bool {
+    if host.starts_with('[') && host.ends_with(']') {
+        return host[1..host.len() - 1]
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_ipv6());
+    }
+
+    if host.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+
+    let dns = host.trim_end_matches('.');
+    if dns.is_empty() || dns.len() > 253 || !dns.is_ascii() {
+        return false;
+    }
+
+    dns.split('.').all(is_valid_dns_label)
+}
+
+fn is_valid_dns_label(label: &str) -> bool {
+    let bytes = label.as_bytes();
+    if bytes.is_empty() || bytes.len() > 63 {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphanumeric() || !bytes[bytes.len() - 1].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
 }
 
 fn is_base64url_no_pad(value: &str) -> bool {
@@ -1810,11 +1881,8 @@ mod tests {
             })),
         )
         .await;
-        assert_eq!(bad_status, StatusCode::FORBIDDEN);
-        assert_eq!(
-            bad_body["error"]["code"],
-            Value::String("invalid_view_token".to_owned())
-        );
+        assert_eq!(bad_status, StatusCode::GONE);
+        assert_eq!(bad_body["error"]["code"], Value::String("gone".to_owned()));
 
         let (good_view_challenge, good_view_bits) = init_once(&app, "view").await;
         let good_view_nonce = solve_pow_for_view(&good_view_challenge, good_view_bits, &nid);
@@ -2249,5 +2317,32 @@ mod tests {
             success_count, 12,
             "all parallel PoW+send flows must succeed"
         );
+    }
+
+    #[test]
+    fn api_catalog_authority_validation_rejects_poisoned_hosts() {
+        assert_eq!(
+            sanitize_authority("Example.COM:8443"),
+            Some("example.com:8443".to_owned())
+        );
+        assert_eq!(
+            sanitize_authority("[::1]:8443"),
+            Some("[::1]:8443".to_owned())
+        );
+
+        for bad in [
+            "",
+            "evil.com:bad",
+            "evil..com",
+            "-evil.com",
+            "evil.com-",
+            "evil_com",
+            "evil.com/path",
+            "user@evil.com",
+            "evil.com\\path",
+            "bad host",
+        ] {
+            assert_eq!(sanitize_authority(bad), None, "{bad} should be rejected");
+        }
     }
 }

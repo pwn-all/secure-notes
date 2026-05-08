@@ -1,4 +1,4 @@
-const CACHE = 'secnote-v2';
+const CACHE = 'secnote-v3';
 const SHELL = ['/', '/app-config.js', '/app.js', '/styles.css', '/pow-worker.js', '/qrcode.min.js', '/logo.svg', '/manifest.json'];
 
 self.addEventListener('install', e => {
@@ -16,7 +16,19 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  if (new URL(e.request.url).pathname.startsWith('/api/')) {
+  const url = new URL(e.request.url);
+  const isApiSurface =
+    url.pathname.startsWith('/api/') ||
+    url.pathname === '/info' ||
+    url.pathname === '/.well-known/api-catalog';
+
+  if (
+    e.request.method !== 'GET' ||
+    url.origin !== self.location.origin ||
+    isApiSurface ||
+    e.request.cache === 'no-store' ||
+    e.request.cache === 'reload'
+  ) {
     e.respondWith(fetch(e.request));
     return;
   }
