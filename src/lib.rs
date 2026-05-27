@@ -96,7 +96,7 @@ impl AppConfig {
             pow_bits_view,
             pow_bits_view_max,
             max_plaintext_bytes: parse_env_usize("MAX_PLAINTEXT_BYTES", 32768),
-            max_blob_bytes: parse_env_usize("MAX_BLOB_BYTES", 16 * 1024),
+            max_blob_bytes: parse_env_usize("MAX_BLOB_BYTES", 48 * 1024),
             max_active_challenges: parse_env_usize(
                 "MAX_ACTIVE_CHALLENGES",
                 DEFAULT_MAX_ACTIVE_CHALLENGES,
@@ -1384,7 +1384,7 @@ mod tests {
             pow_bits_view: 6,
             pow_bits_view_max: 10,
             max_plaintext_bytes: 32768,
-            max_blob_bytes: 16 * 1024,
+            max_blob_bytes: 48 * 1024,
             max_active_challenges: DEFAULT_MAX_ACTIVE_CHALLENGES,
             max_notes: DEFAULT_MAX_NOTES,
             max_tracking_entries: DEFAULT_MAX_TRACKING_ENTRIES,
@@ -1468,9 +1468,9 @@ mod tests {
 
     fn fake_aes_blob(seed: &[u8]) -> String {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&vec![0x11u8; NOTE_NONCE_BYTES]);
+        bytes.extend_from_slice(&[0x11u8; NOTE_NONCE_BYTES]);
         bytes.extend_from_slice(seed);
-        bytes.extend_from_slice(&vec![0x22u8; NOTE_TAG_BYTES]);
+        bytes.extend_from_slice(&[0x22u8; NOTE_TAG_BYTES]);
         URL_SAFE_NO_PAD.encode(bytes)
     }
 
@@ -1705,7 +1705,7 @@ mod tests {
         let app = build_router(state);
 
         let (challenge, bits) = init_once(&app, "create").await;
-        let oversized_plaintext = vec![b'a'; 4097];
+        let oversized_plaintext = vec![b'a'; 32769];
         let blob = fake_aes_blob(&oversized_plaintext);
         let nonce = solve_pow_for_create(&challenge, bits, 43_200, &blob);
 
