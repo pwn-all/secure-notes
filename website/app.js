@@ -16,7 +16,7 @@ const LS_TRUSTED_KEY = 'sn_trusted';
 const POW_CHUNK = 250;
 const POW_REFRESH_SKEW_MS = 5000;
 const MAX_POW_BITS = 28;
-const DEFAULT_MAX_PLAINTEXT_BYTES = 4096;
+const DEFAULT_MAX_PLAINTEXT_BYTES = 32768;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const POW_NONCE_BYTES = 8;
 const AES_KEY_BYTES = 32;
@@ -2043,7 +2043,7 @@ if (ENABLE_MODEL_CONTEXT_TOOLS && typeof navigator !== 'undefined' && navigator.
         properties: {
           text: {
             type: 'string',
-            description: 'The text content to encrypt and send (max 4096 UTF-8 bytes by default).',
+            description: 'The text content to encrypt and send (max 32768 UTF-8 bytes by default).',
             maxLength: DEFAULT_MAX_PLAINTEXT_BYTES,
           },
           ttl: {

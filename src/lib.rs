@@ -95,7 +95,7 @@ impl AppConfig {
             pow_bits_create_max,
             pow_bits_view,
             pow_bits_view_max,
-            max_plaintext_bytes: parse_env_usize("MAX_PLAINTEXT_BYTES", 4096),
+            max_plaintext_bytes: parse_env_usize("MAX_PLAINTEXT_BYTES", 32768),
             max_blob_bytes: parse_env_usize("MAX_BLOB_BYTES", 16 * 1024),
             max_active_challenges: parse_env_usize(
                 "MAX_ACTIVE_CHALLENGES",
@@ -1383,7 +1383,7 @@ mod tests {
             pow_bits_create_max: 12,
             pow_bits_view: 6,
             pow_bits_view_max: 10,
-            max_plaintext_bytes: 4096,
+            max_plaintext_bytes: 32768,
             max_blob_bytes: 16 * 1024,
             max_active_challenges: DEFAULT_MAX_ACTIVE_CHALLENGES,
             max_notes: DEFAULT_MAX_NOTES,
