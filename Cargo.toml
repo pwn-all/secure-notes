@@ -17,7 +17,7 @@ sha2 = "0.11"
 subtle = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tower = { version = "0.5.3", features = ["limit"] }
-tower-http = { version = "0.6.8", features = [
+tower-http = { version = "0.7.0", features = [
   "fs",
   "set-header",
   "compression-br",
