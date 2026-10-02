@@ -7,7 +7,7 @@ edition = "2024"
 axum = { version = "0.8.9", features = ["http2"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 base64 = "0.22.1"
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 dotenvy = "0.15"
 http = "1"
 rand = "0.10"
