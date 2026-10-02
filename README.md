@@ -15,7 +15,9 @@
 
 RAM-only service for self-destructing end-to-end encrypted notes.
 
-The server stores only ciphertext — it never sees the key, never touches disk, and atomically destroys the note on first read. Zero configuration required for self-hosting.
+With a trusted frontend, the server receives ciphertext and a secret read token, never the decryption key. Notes are kept in process memory and atomically removed on the first authorized read. Self-hosting requires TLS certificates.
+
+See [the security review](docs/security-review.ru.md) for findings, fixes, OWASP mapping, and deployment limits.
 
 ---
 
@@ -30,7 +32,7 @@ The server stores only ciphertext — it never sees the key, never touches disk,
 
 The entire frontend is plain HTML + JS + CSS with no build step, no CDN dependencies, and no server-side rendering. You can:
 
-- **Download once, use anywhere** — save [`index.html`](website/index.html), [`app.js`](website/app.js), [`styles.css`](website/styles.css), and [`pow-worker.js`](website/pow-worker.js) to a local folder and open `index.html` directly in any browser, including Tor Browser.
+- **Download once, use anywhere** — copy the entire [`website/`](website/) directory and open `index.html` directly in a browser supporting WebCrypto AES-GCM and Ed25519. Keep the relative paths, including translations and the QR library.
 - **Point at any backend** — use `?api=https://your-server` in the URL (or enter it in the settings panel) to connect the local frontend to any SecNote instance.
 - **Distrust the server's frontend delivery** — if you don't trust that the server is serving unmodified JS, audit the files once and use your own copy. The server never needs to touch your frontend again.
 - **Full functionality offline** — encryption, PoW solving, QR code generation, and i18n all run locally. Only the API calls (`/api/v1/*`) go to the network.
@@ -41,15 +43,15 @@ No apps to install, no packages to build, no runtime to configure. Works in air-
 
 | Property | Detail |
 |---|---|
-| Zero-knowledge server | Stores only `nid`, `blob`, and timestamps — never the key |
+| Zero-knowledge server | Stores `nid`, `blob`, a hash of the read token, and expiry — never the AES key when using a trusted frontend |
 | Burn protection | Reading requires `view_token = SHA-256(aes_key)`; knowing only `nid` is not enough |
 | Payload-bound PoW | `SHA-256(challenge ‖ nonce ‖ SHA-256(ttl ‖ blob))` — challenge can't be reused for a different payload |
 | One-time challenge | Both challenge and note are consumed atomically |
 | IP privacy | Anti-abuse state keyed on `SHA-256(IP ‖ server_salt)`; raw IPs never stored |
 | Ephemeral salt | `server_salt` is random per process start; all anti-abuse state lost on restart |
-| Authenticated API responses | Every `/api/v1/*` and `/info` response is signed with an ephemeral Ed25519 key generated at startup; the client verifies the signature before parsing — a network-level attacker with a forged TLS cert cannot inject or replay responses |
+| Authenticated API responses | Ed25519 signatures bind response bytes, status, method, path/query, request body hash, and a fresh client nonce; protection requires a trusted frontend and signing key |
 | Strict CSP | `default-src 'none'` with minimal allowlist |
-| Offline shell | Service worker caches static assets; API calls always bypass the cache |
+| Offline shell | Service worker caches allowlisted public assets using URLs without queries; API calls always bypass the cache |
 
 ---
 
@@ -106,13 +108,16 @@ sudo ./scripts/1click.sh example.com admin@example.com
 
 - Runs certbot in standalone mode (binds `:80` temporarily — requires root and a free port 80).
 - Idempotent: skips certbot if the certificate files already exist.
-- Creates `.env` from `.env.example` if it doesn't exist yet, then sets `TLS_CERT_PATH` and `TLS_KEY_PATH` automatically.
+- Creates `.env` from `.env.example` if it doesn't exist yet, then sets `TLS_CERT_PATH`, `TLS_KEY_PATH`, and `PUBLIC_HOST` automatically.
+- Writes `.env` with mode 0600. With `sudo`, the file belongs to root.
 
-After the script finishes, start the server:
+For production, build the release binary and run it through a service configured for a dedicated user:
 
 ```bash
-cargo run --release
+cargo build --release --locked
 ```
+
+Configure the service manager to load the private `.env` and grant the service user read access to private certificate copies. Use high listener ports behind an ingress or grant only the low-port bind capability. An ordinary `cargo run` cannot read the root-owned `.env` and Let's Encrypt private key created by this setup. Keep those files private. Set a stable `SIGNING_KEY` before publishing, and configure certificate renewal followed by SIGHUP to the running server.
 
 **Optional env vars for the script:**
 
@@ -124,7 +129,9 @@ cargo run --release
 
 ## Docker
 
-The image handles everything — build, certificate, and server — in one command. No local clone required; Docker fetches the source directly from GitHub.
+The image builds the application, can obtain its initial certificate, and starts the server as UID/GID 65532 after certificate setup. Docker can fetch the source directly from GitHub.
+
+Before production startup, create a private `.env.production` (mode 0600) containing your unique `SIGNING_KEY` and `PUBLIC_HOST=example.com`. Generate the signing seed with the command under [Response signing](#response-signing). These values keep client pins stable and fix the HTTP redirect destination. The file is excluded from Git and the Docker build context.
 
 ### One-click (auto Let's Encrypt)
 
@@ -134,6 +141,7 @@ docker build -t secnote https://github.com/pwn-all/secure-notes.git
 docker run -d \
   --name secnote \
   --restart unless-stopped \
+  --env-file .env.production \
   -p 80:80 \
   -p 443:443 \
   -v letsencrypt:/etc/letsencrypt \
@@ -142,7 +150,15 @@ docker run -d \
   secnote
 ```
 
-The container runs certbot on first start, obtains a certificate, then starts the server. The `/etc/letsencrypt` volume persists the certificate across restarts — certbot skips renewal if the cert is still valid.
+On startup the container runs certbot, which keeps certificates that are not due for renewal. The `/etc/letsencrypt` volume persists ACME material. The entrypoint copies the certificate and private key into `/run/secnote` with restricted access, then drops root privileges before running the server. The application retains only `NET_BIND_SERVICE` for low listener ports, or no capabilities for high ports, and enables `no_new_privs`.
+
+The entrypoint does not schedule ongoing renewal. Configure an ACME renewal service; standalone validation requires a free port 80, so use a suitable DNS/webroot validation or a separate ACME listener for renewal while SecNote is running. After renewal, update the running container's private copies and request TLS reload:
+
+```bash
+docker exec --user 0 secnote /app/entrypoint.sh --reload-tls
+```
+
+Confirm `TLS certificate reloaded without restarting the server` in the server logs. A malformed certificate/key pair keeps the previous active TLS configuration. Successful reload preserves notes and the signing key; restarting the container clears notes.
 
 Set `-e LETSENCRYPT_STAGING=1` to use the Let's Encrypt staging CA while testing.
 
@@ -154,6 +170,7 @@ If you already have a certificate (from certbot, another ACME client, or a CA):
 docker run -d \
   --name secnote \
   --restart unless-stopped \
+  --env-file .env.production \
   -p 80:80 \
   -p 443:443 \
   -v /etc/letsencrypt:/etc/letsencrypt:ro \
@@ -164,9 +181,11 @@ docker run -d \
 
 Notes hold no state outside the process — there is no data volume to mount. Restarting the container clears all notes (by design).
 
+For an explicitly nonroot container, mount certificate/key files readable by that user and select high listener ports. In that mode the entrypoint uses the supplied files directly; update them and send SIGHUP to the server after renewal.
+
 ## Environment variables
 
-All variables are optional. The server works with defaults.
+The defaults support startup when the default TLS files exist. Production should set `PUBLIC_HOST`, a stable private `SIGNING_KEY`, and the instance's certificate paths or Docker ACME settings.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -180,8 +199,13 @@ All variables are optional. The server works with defaults.
 | `POW_BITS_CREATE_MAX` | `28` | Max PoW difficulty under load (alias: `POW_BITS_MAX`) |
 | `POW_BITS_VIEW` | `16` | Base PoW difficulty for note reading |
 | `POW_BITS_VIEW_MAX` | `24` | Max PoW difficulty for reading under load |
-| `MAX_PLAINTEXT_BYTES` | `4096` | Maximum plaintext size |
-| `MAX_BLOB_BYTES` | `16384` | Maximum encrypted blob size |
+| `MAX_PLAINTEXT_BYTES` | `32768` | Maximum plaintext size, clamped to 1–32768 UTF-8 bytes |
+| `MAX_BLOB_BYTES` | `49152` | Maximum base64url-encoded blob size, clamped to 39–49152 bytes |
+| `MAX_NOTE_STORAGE_BYTES` | `67108864` | Total stored encoded ciphertext budget (64 MiB); excludes map overhead, TLS, and request buffers |
+| `MAX_NOTES` | `50000` | Maximum active notes |
+| `MAX_ACTIVE_CHALLENGES` | `10000` | Maximum active PoW challenges |
+| `MAX_TRACKING_ENTRIES` | `100000` | Maximum entries in each anti-abuse tracking map |
+| `MAX_CONCURRENT_API_REQUESTS` | `64` | API requests processed concurrently, clamped to 1–1024; excess requests receive 503 |
 | `POW_FAIL_WINDOW_SECS` | `600` | Window for counting PoW failures per IP |
 | `BAN_SHORT_SECS` | `300` | Short ban (3+ failures) |
 | `BAN_MEDIUM_SECS` | `1800` | Medium ban (6+ failures) |
@@ -198,24 +222,51 @@ Base URL is the server's own origin; no API key required. All write operations r
 
 ### Response signing
 
-Every response from `/info` and all `/api/v1/*` endpoints carries an Ed25519 signature:
+Responses from `/info` and `/api/v1/*` after the bounded request body has been read carry an Ed25519 signature. The official client supplies a fresh, random 16-byte base64url nonce in `x-secnote-request-id` and requires:
+
+```text
+x-secnote-sig-v2: <base64url(Ed25519 signature)>
+```
+
+The signed message is the following UTF-8 prefix followed by the **raw response body bytes**, with a newline after every prefix line:
+
+```text
+secnote-response-v2
+<uppercase HTTP method>
+<exact path and query>
+<x-secnote-request-id>
+<base64url(SHA-256(raw request body bytes))>
+<decimal HTTP status>
+```
+
+Use the SHA-256 of an empty body for a bodyless request. A client must compare the signature with its own request context and a new nonce for every request. The official frontend verifies the raw bytes before decoding JSON. It rejects missing/invalid v2 signatures and never falls back to the legacy signature. Request bodies and handler execution each have a 10-second deadline. Overload, invalid request IDs, and failures while reading the request body are rejected before a complete signing context exists; these early errors may be unsigned and are treated as untrusted failures by the official client.
+
+The legacy header is retained for API compatibility; it authenticates **only the body** and provides no replay or request-context protection:
 
 ```
 x-secnote-sig: <base64url(Ed25519 signature of the raw response body bytes)>
 ```
 
-The server's Ed25519 public key is returned by `GET /info` as `pubkey` (base64url, 32 bytes). The signing key is generated ephemerally at startup — it changes on every restart. The official frontend fetches and caches this key on first connect, then verifies every subsequent response before parsing — meaning a network-level attacker who can intercept TLS (e.g. a corporate proxy with a trusted CA cert) still cannot inject or tamper with API responses.
+The server's Ed25519 public key is returned by `GET /info` as `pubkey` (base64url, 32 bytes). By default it changes on every restart. Once the client trusts a key, v2 signatures detect forged/replayed responses even if TLS is intercepted, provided the client code itself remains trusted. Signatures do not hide requests or protect the frontend delivered by a compromised server.
 
 #### Public key trust model
 
 Because the signing key is ephemeral, the client must learn the server's current public key before it can verify responses. The trust flow works as follows:
 
-1. **First connect** — the client fetches `GET /info` *without* signature verification (`allowUnsigned: true`) to retrieve `pubkey`. This is the only unverified request the client ever makes.
+1. **First connect** — without an existing trusted key, the client fetches `GET /info` without signature verification to retrieve `pubkey`. Same-origin keys are learned automatically; a new external API requires a trust decision. This first exchange relies on the transport and frontend delivery being trustworthy.
 2. **TOFU storage** — the fetched key is saved in `localStorage` keyed by API origin. All subsequent requests to that origin are verified against the stored key before any response body is parsed.
 3. **Pre-pinning** — if you obtained the public key out-of-band (e.g. from the server's startup log), you can supply it as `<api-url>|<base64url-pubkey>` in the `?api=` query parameter or in the settings panel. The client then skips the TOFU round-trip and trusts only that key from the start.
 4. **Stable key across restarts** — by default the key is regenerated on every restart, which invalidates stored trust. Set the `SIGNING_KEY` environment variable (base64url, 32-byte Ed25519 seed) to keep the public key constant so pinned clients don't need to re-trust after a redeploy.
 
-> **Why this matters:** TLS alone cannot protect you if an attacker controls a trusted CA (e.g. a corporate proxy or a nation-state MitM). Ed25519-signed responses mean that even a forged TLS certificate cannot produce valid signatures — the client will reject tampered or injected responses outright.
+An attacker present during the first unpinned connection can substitute their own key. For that threat model, distribute a trusted frontend and obtain the signing public key through an independent channel. A TLS interceptor can also observe read tokens, alter or block requests, and deny service; response signing does not prevent these actions.
+
+To generate a unique stable signing seed, run:
+
+```bash
+python3 -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip('='))"
+```
+
+Store the seed in a private `.env` or secret store as `SIGNING_KEY`. Do not commit it. If a legitimate signing key changes, manually verify the replacement and enter `<api-url>|<new-public-key>` in settings; saving an unchanged URL preserves existing trust.
 
 ### `GET /api/v1/init?scope=create|view`
 
@@ -233,7 +284,7 @@ Returns a PoW challenge, encryption parameters, and server limits.
     "challenge": "<base64url>"
   },
   "encryption": { "alg": "aes-256-gcm", "key_bytes": 32, "nonce_bytes": 12, "tag_bytes": 16 },
-  "limits": { "max_plaintext_bytes": 4096, "max_blob_bytes": 16384, "ttls": [43200, 86400] }
+  "limits": { "max_plaintext_bytes": 32768, "max_blob_bytes": 49152, "ttls": [43200, 86400] }
 }
 ```
 
@@ -300,9 +351,33 @@ The Privacy Policy shown to users will automatically display your domain and `le
 ## Tests
 
 ```bash
-cargo test
+cargo test --locked
+node --test tests/*.test.cjs
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo audit --deny warnings
+cargo build --release --locked
+node tests/runtime-smoke.cjs --binary target/release/secure_notes
 ```
+
+The runtime smoke uses isolated temporary certificates and a test signing seed. It checks real TLS/HTTP2, signed API operations, burn protection, live certificate reload, and the incomplete-header deadline. It requires Node.js with WebCrypto, OpenSSL, and permission to bind local test ports.
 
 ## Third-party code
 
 [qrcode-svg](https://github.com/datalog/qrcode-svg) — MIT License. Copyright and license notice retained in this repository.
+
+## Deployment security
+
+Set `PUBLIC_HOST` to your instance hostname to give HTTP redirects a fixed destination. The certificate setup scripts set it from the supplied domain. Keep `SIGNING_KEY` private and stable across redeploys, and publish the backend and frontend together because the official client requires signature v2.
+
+The server limits HTTP/1 headers to 32 KiB/64 fields with a 10-second read deadline. HTTP/2 permits 64 concurrent streams and a 16 KiB header list, with keepalive checks. Configure ingress limits for total connections, initial bytes, idle sockets, and aggregate request rate; protocol detection and an incomplete HTTP/2 preface precede these handler limits. A reverse proxy also changes the IP observed by built-in rate limits; forwarded headers must follow an explicit trusted-proxy policy.
+
+Before opening a Docker deployment to the public, build and run the exact image on Linux, exercise note creation/read and certificate renewal/reload, and verify its runtime identity:
+
+```bash
+docker exec secnote sh -c 'awk "/^(Uid|Gid|CapEff|CapBnd|NoNewPrivs):/" /proc/1/status'
+```
+
+Expect UID/GID 65532, `NoNewPrivs: 1`, and only the low-port bind capability (`0000000000000400`) for default ports, or zero capabilities for high ports. Root is used for setup and the explicit TLS-copy refresh. The root entrypoint needs permission to change UID/GID and capabilities during initialization; it fails if privilege reduction cannot complete. Validate the public certificate chain, redirect, headers, and CI result for the release as well.
+
+RAM-only application storage does not disable swap, core dumps, VM snapshots, browser history, clipboard history, or recipients' ability to copy plaintext. The note is removed when the API accepts an authorized read, before delivery and browser decryption; a network failure can therefore lose the note. Physical removal of expired entries occurs on the cleanup interval, though expired notes cannot be read. Publish an instance privacy notice that matches your actual logs and infrastructure.

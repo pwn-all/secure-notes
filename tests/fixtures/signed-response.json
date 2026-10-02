@@ -1,0 +1,13 @@
+{
+  "seed": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+  "pubkey": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+  "context": {
+    "method": "GET",
+    "target": "/info",
+    "requestId": "AQEBAQEBAQEBAQEBAQEBAQ",
+    "requestHash": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+  },
+  "status": 200,
+  "body": "{\"ok\":true,\"notes\":0,\"ram_usage\":\"0 mb\",\"pubkey\":\"6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw\"}",
+  "signature": "MhkFiBKsh12bsupsUqQoi5zLmVXumjjaD8NRKccVxlZ20obqRAFtHuh9GIQi_LUrom79BY7F-jt0ailtfchACA"
+}

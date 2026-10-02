@@ -9,7 +9,7 @@
 **/*.rs.bk.*
 
 # Cargo
-Cargo.lock  # keep this for binaries; remove this line if publishing a library
+# Cargo.lock is committed for reproducible application builds.
 
 # Rustfmt / Clippy
 **/*.rs.orig
@@ -72,6 +72,8 @@ $RECYCLE.BIN/
 # Logs & temp
 # ----------------------
 .env
+.env.*
+!.env.example
 *.log
 *.tmp
 *.temp
@@ -83,3 +85,4 @@ $RECYCLE.BIN/
 # Misc
 # ----------------------
 *.lock
+!Cargo.lock

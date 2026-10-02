@@ -5,13 +5,14 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  schedule:
+    - cron: '23 4 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   test:
@@ -19,10 +20,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -31,18 +34,48 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Format
+        run: cargo fmt --check
+
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
 
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
+
+      - name: Frontend security regressions
+        run: node --test tests/*.test.cjs
+
+      - name: HTTPS runtime smoke
+        run: node tests/runtime-smoke.cjs --binary target/debug/secure_notes
+
+  security:
+    name: RustSec audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit dependencies
+        run: cargo audit --deny warnings
+
+  report-failure:
+    name: Report CI failure
+    needs: [test, security]
+    if: failure() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
 
       - name: Open failure issue
-        if: failure() && github.event_name == 'push'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const sha = context.sha.slice(0, 7);
@@ -58,6 +91,6 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `CI failure on main (${sha})`,
-              body: `Tests or clippy failed on [\`${sha}\`](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}).\n\n[View run](${runUrl})`,
+              body: `Build, formatting, tests, clippy, or dependency audit failed on [\`${sha}\`](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}).\n\n[View run](${runUrl})`,
               labels: ['ci-failure'],
             });

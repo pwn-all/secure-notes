@@ -1,0 +1,20 @@
+{
+  "browser": "HeadlessChrome/149.0.7827.55",
+  "utf8Bytes": 32768,
+  "requests": 14,
+  "cacheEntries": 8,
+  "errors": 0,
+  "checks": [
+    "AES-GCM 32768-byte Unicode create/read",
+    "contextual signature verified by browser",
+    "PoW worker",
+    "QR generation under CSP",
+    "read clears URL fragment",
+    "browser back clears plaintext",
+    "second read returns burned",
+    "AES key absent from API requests",
+    "cross-origin CORS create/read with pinned API",
+    "burn clears plaintext",
+    "public cache URLs contain no secret query/fragment"
+  ]
+}

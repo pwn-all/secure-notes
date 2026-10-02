@@ -10,12 +10,13 @@ base64 = "0.22.1"
 ed25519-dalek = "3"
 dotenvy = "0.15"
 http = "1"
+hyper-util = { version = "0.1.21", features = ["server-auto", "service", "tokio"] }
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.11"
 subtle = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "signal", "time"] }
 tower = { version = "0.5.3", features = ["limit"] }
 tower-http = { version = "0.7.0", features = [
   "fs",

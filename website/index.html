@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; worker-src 'self' file:; child-src 'none'; frame-src 'none'; style-src 'self' file:; font-src 'self' file:; img-src 'self' file: data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; manifest-src 'self' file:; base-uri 'none'; object-src 'none'; form-action 'none'">
 
   <!-- Primary SEO -->
   <title>SecNote — write your secret</title>
@@ -924,6 +926,7 @@
      APP SCRIPT
 ══════════════════════════════════════ -->
 <script src="qrcode.min.js" defer></script>
+<script src="app-config.js" defer></script>
 <script src="app.js" defer></script>
 <script src="sw-register.js" defer></script>
 

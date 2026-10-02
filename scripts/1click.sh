@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -10,6 +11,15 @@ EMAIL="${2:-}"
 
 if [[ -z "${DOMAIN}" || -z "${EMAIL}" ]]; then
   echo "Usage: $0 <domain> <email>"
+  exit 1
+fi
+
+if [[ ! "${DOMAIN}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ || "${DOMAIN}" == *..* || ${#DOMAIN} -gt 253 ]]; then
+  echo "Invalid certificate hostname."
+  exit 1
+fi
+if [[ -L "${ENV_FILE}" ]]; then
+  echo "Refusing to replace a symlink used as ENV_FILE."
   exit 1
 fi
 
@@ -63,16 +73,28 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 set_env_var() {
-  local key="$1" val="$2"
-  if grep -q "^${key}=" "${ENV_FILE}"; then
-    sed -i.bak "s|^${key}=.*|${key}=${val}|" "${ENV_FILE}"
-    rm -f "${ENV_FILE}.bak"
-  else
-    printf '%s=%s\n' "${key}" "${val}" >> "${ENV_FILE}"
-  fi
+  local key="$1" val="$2" line found=0 temporary
+  temporary="$(mktemp "${ENV_FILE}.XXXXXX")"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "${key}="* ]]; then
+      printf '%s=%s\n' "$key" "$val"
+      found=1
+    else
+      printf '%s\n' "$line"
+    fi
+  done < "${ENV_FILE}" > "$temporary"
+  if [[ "$found" == 0 ]]; then printf '%s=%s\n' "$key" "$val" >> "$temporary"; fi
+  chmod 600 "$temporary"
+  mv "$temporary" "${ENV_FILE}"
 }
 
 set_env_var "TLS_CERT_PATH" "${CERT_PATH}"
 set_env_var "TLS_KEY_PATH"  "${KEY_PATH}"
+set_env_var "PUBLIC_HOST" "${DOMAIN}"
 
 echo ".env updated → ${ENV_FILE}"
+if [[ "${EUID}" == 0 ]]; then
+  echo "The .env file remains root-owned with mode 0600."
+  echo "Configure a dedicated service to load it and read the TLS key; an ordinary user cannot use these files directly."
+fi
+echo "Configure certificate renewal and a successful TLS reload before exposing the service publicly."

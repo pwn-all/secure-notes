@@ -17,6 +17,7 @@ const POW_CHUNK = 250;
 const POW_REFRESH_SKEW_MS = 5000;
 const MAX_POW_BITS = 28;
 const DEFAULT_MAX_PLAINTEXT_BYTES = 32768;
+const MAX_BLOB_BYTES = 48 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const POW_NONCE_BYTES = 8;
 const AES_KEY_BYTES = 32;
@@ -50,6 +51,9 @@ let apiCheckSeq = 0;
 let composeWarmupSeq = 0;
 let maxPlaintextBytes = DEFAULT_MAX_PLAINTEXT_BYTES;
 let confirmedApiUrl = null;
+let createInFlight = false;
+let viewInFlight = false;
+let apiConfigController = null;
 
 /* ── i18n ── */
 const LS_LANG_KEY = 'sn_lang';
@@ -454,7 +458,10 @@ function normalizePubkeyB64(value) {
 }
 
 function getTrustedApis() {
-  try { return JSON.parse(storageGet(LS_TRUSTED_KEY, '{}')); } catch { return {}; }
+  try {
+    const value = JSON.parse(storageGet(LS_TRUSTED_KEY, '{}'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
 }
 function getTrustedPubkey(url) {
   const map = getTrustedApis();
@@ -469,7 +476,7 @@ function saveTrustedApi(url, pubkey) {
   try { localStorage.setItem(LS_TRUSTED_KEY, JSON.stringify(map)); } catch {}
 }
 
-async function fetchApiPubkey(baseUrl, verifyPubkeyB64 = null) {
+async function fetchApiPubkey(baseUrl, verifyPubkeyB64 = null, signal = null) {
   const expectedPubkey = normalizePubkeyB64(verifyPubkeyB64);
   try {
     const { response, body } = await fetchJson(
@@ -478,6 +485,7 @@ async function fetchApiPubkey(baseUrl, verifyPubkeyB64 = null) {
         headers: { Accept: 'application/json' },
         allowUnsigned: !expectedPubkey,
         verifyPubkeyB64: expectedPubkey,
+        signal,
       },
       4000
     );
@@ -521,7 +529,7 @@ function initialApiConfig() {
   const trusted = getTrustedPubkey(url);
   const pubkey = trusted !== null
     ? normalizePubkeyB64(trusted)
-    : (normalizePubkeyB64(pubkeyB64) || normalizePubkeyB64(DEFAULT_API_PUBKEY));
+    : (normalizePubkeyB64(pubkeyB64) || (url === DEFAULT_API ? normalizePubkeyB64(DEFAULT_API_PUBKEY) : null));
   return { url, pubkeyB64: pubkey };
 }
 
@@ -598,6 +606,7 @@ function plaintextByteLength(text) {
 }
 
 function canSendCurrentCompose() {
+  if (createInFlight) return false;
   const text = $('noteInput').value;
   if (!text.trim()) return false;
   if (plaintextByteLength(text) > maxPlaintextBytes) return false;
@@ -609,6 +618,7 @@ function updateSendAvailability() {
 }
 
 function canRevealCurrentGate() {
+  if (viewInFlight) return false;
   return !!(presolvedViewNonce && apiPubKeyB64 && isPowFresh(powCache.view));
 }
 
@@ -664,14 +674,14 @@ function setReach(state, label) {
   $('reachLbl').textContent = label || '';
 }
 
-async function readLimitedText(response, maxBytes = MAX_RESPONSE_BYTES) {
+async function readLimitedBytes(response, maxBytes = MAX_RESPONSE_BYTES) {
   const cl = response.headers.get('content-length');
   if (cl && Number.parseInt(cl, 10) > maxBytes) throw new Error('response too large');
 
   if (!response.body || typeof response.body.getReader !== 'function') {
-    const text = await response.text();
-    if (te.encode(text).length > maxBytes) throw new Error('response too large');
-    return text;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length > maxBytes) throw new Error('response too large');
+    return bytes;
   }
 
   const reader = response.body.getReader();
@@ -695,36 +705,53 @@ async function readLimitedText(response, maxBytes = MAX_RESPONSE_BYTES) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   });
-  return td.decode(bytes);
+  return bytes;
 }
 
 async function fetchJson(url, options = {}, timeoutMs = 7000) {
-  const { allowUnsigned = false, verifyPubkeyB64, ...fetchOptions } = options;
+  const { allowUnsigned = false, verifyPubkeyB64, signal, ...fetchOptions } = options;
   const explicitVerificationKey = Object.prototype.hasOwnProperty.call(options, 'verifyPubkeyB64');
   const rawVerificationKey = explicitVerificationKey ? verifyPubkeyB64 : apiPubKeyB64;
   const verificationKey = rawVerificationKey ? normalizePubkeyB64(rawVerificationKey) : null;
   if (rawVerificationKey && !verificationKey) throw new Error('invalid server signing key');
 
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const requestUrl = new URL(url);
+    const method = (fetchOptions.method || 'GET').toUpperCase();
+    const requestId = b64u(crypto.getRandomValues(new Uint8Array(16)));
+    if (fetchOptions.body !== undefined && typeof fetchOptions.body !== 'string') {
+      throw new Error('API request body must be a string');
+    }
+    const requestHash = b64u(await sha256(te.encode(fetchOptions.body || '')));
+    const headers = new Headers(fetchOptions.headers);
+    headers.set('x-secnote-request-id', requestId);
     const response = await fetch(url, {
       ...fetchOptions,
+      method,
+      headers,
       cache: 'no-store',
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
       redirect: 'error',
       signal: controller.signal,
     });
-    const text = await readLimitedText(response);
+    const bytes = await readLimitedBytes(response);
 
     if (verificationKey) {
-      await verifyResponseSignature(response, text, verificationKey);
+      await verifyResponseSignature(response, bytes, verificationKey, {
+        method, target: requestUrl.pathname + requestUrl.search, requestId, requestHash,
+      });
     } else if (!allowUnsigned) {
       throw Object.assign(new Error('server signing key not configured'), { code: 'no_pubkey' });
     }
 
+    const text = td.decode(bytes);
     let body = null;
 
     if (text) {
@@ -741,6 +768,7 @@ async function fetchJson(url, options = {}, timeoutMs = 7000) {
     throw err;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -826,6 +854,9 @@ async function getPowInit(scope) {
     if (!response.ok || !body?.ok || !body?.pow?.challenge) {
       throw responseError(response, body, 'failed to initialize request');
     }
+    if (powContextVersion !== version || apiBase() !== base) {
+      throw new Error('PoW initialization was invalidated');
+    }
 
     const bits = body.pow.bits;
     if (!Number.isInteger(bits) || bits < 1 || bits > MAX_POW_BITS) {
@@ -842,7 +873,12 @@ async function getPowInit(scope) {
     }
     const serverMaxPlaintext = body?.limits?.max_plaintext_bytes;
     if (Number.isInteger(serverMaxPlaintext) && serverMaxPlaintext > 0 && serverMaxPlaintext <= 1024 * 1024) {
-      maxPlaintextBytes = serverMaxPlaintext;
+      const serverMaxBlob = body?.limits?.max_blob_bytes;
+      if (!Number.isInteger(serverMaxBlob) || serverMaxBlob < AES_GCM_IV_BYTES + AES_GCM_TAG_BYTES || serverMaxBlob > MAX_BLOB_BYTES) {
+        throw new Error('invalid encrypted blob limit');
+      }
+      maxPlaintextBytes = Math.min(serverMaxPlaintext, DEFAULT_MAX_PLAINTEXT_BYTES,
+        Math.floor(serverMaxBlob * 3 / 4) - AES_GCM_IV_BYTES - AES_GCM_TAG_BYTES);
       updateCharMeter();
     }
     const entry = {
@@ -996,6 +1032,7 @@ function fromb64u(s, expectedBytes = null, label = 'base64url value') {
   if (expectedBytes !== null && out.length !== expectedBytes) {
     throw new Error('invalid ' + label + ' length');
   }
+  if (b64u(out) !== s) throw new Error('non-canonical ' + label);
   return out;
 }
 
@@ -1078,7 +1115,7 @@ async function encrypt(text) {
 }
 
 async function decrypt(blobB64, keyB64) {
-  if (typeof blobB64 !== 'string' || blobB64.length > 32768) throw new Error('blob too large');
+  if (typeof blobB64 !== 'string' || blobB64.length > MAX_BLOB_BYTES) throw new Error('blob too large');
   if (typeof keyB64 !== 'string' || !KEY_RE.test(keyB64)) throw new Error('invalid key format');
   const blobBytes = fromb64u(blobB64, null, 'blob');
   if (blobBytes.length < AES_GCM_IV_BYTES + AES_GCM_TAG_BYTES) throw new Error('invalid blob length');
@@ -1095,7 +1132,9 @@ async function viewTokenFromKey(keyB64) {
 }
 
 function setApiPubKey(b64) {
-  apiPubKeyB64 = normalizePubkeyB64(b64);
+  const nextKey = normalizePubkeyB64(b64);
+  if (nextKey !== apiPubKeyB64) clearPowCache();
+  apiPubKeyB64 = nextKey;
   apiVerifyKey = null;
 }
 
@@ -1106,23 +1145,16 @@ async function importEd25519VerifyKey(b64) {
   );
 }
 
-async function loadVerifyKey(b64) {
-  if (!b64) { apiVerifyKey = null; return; }
-  apiVerifyKey = await importEd25519VerifyKey(b64);
-}
-
-async function verifyResponseSignature(response, text, pubkeyB64) {
-  const sigB64 = response.headers.get('x-secnote-sig');
+async function verifyResponseSignature(response, bytes, pubkeyB64, context) {
+  const sigB64 = response.headers.get('x-secnote-sig-v2');
   if (!sigB64) throw new Error('response signature missing');
   const sigBytes = fromb64u(sigB64, 64, 'response signature');
-  let verifyKey;
-  if (pubkeyB64 === apiPubKeyB64) {
-    if (!apiVerifyKey) await loadVerifyKey(pubkeyB64);
-    verifyKey = apiVerifyKey;
-  } else {
-    verifyKey = await importEd25519VerifyKey(pubkeyB64);
-  }
-  const valid = await crypto.subtle.verify({ name: 'Ed25519' }, verifyKey, sigBytes, te.encode(text));
+  const verifyKey = apiVerifyKey?.pubkey === pubkeyB64
+    ? apiVerifyKey.key : await importEd25519VerifyKey(pubkeyB64);
+  if (pubkeyB64 === apiPubKeyB64) apiVerifyKey = { pubkey: pubkeyB64, key: verifyKey };
+  const prefix = te.encode('secnote-response-v2\n' + context.method + '\n' + context.target + '\n' +
+    context.requestId + '\n' + context.requestHash + '\n' + response.status + '\n');
+  const valid = await crypto.subtle.verify({ name: 'Ed25519' }, verifyKey, sigBytes, concatBytes(prefix, bytes));
   if (!valid) throw new Error('response signature invalid');
 }
 
@@ -1262,6 +1294,7 @@ function parseSharedLink(raw) {
   if (!isSafeApiTransport(rawApiUrl)) throw new Error('link API must be HTTPS, or HTTP on localhost');
   if (linkPubkey && !normalizePubkeyB64(linkPubkey)) throw new Error('invalid API public key');
   if (rawPinParam && !normalizePubkeyB64(rawPinParam)) throw new Error('invalid API pin');
+  if (linkPubkey && rawPinParam && linkPubkey !== rawPinParam) throw new Error('conflicting API pins');
   const derivedApi = normalizeApiUrl(rawApiUrl);
 
   return {
@@ -1296,6 +1329,7 @@ async function openSharedLink(raw) {
 
 /* ── Send note ── */
 $('sendBtn').addEventListener('click', async () => {
+  if (createInFlight) return;
   const text = $('noteInput').value;
   if (!text.trim()) return;
   if (plaintextByteLength(text) > maxPlaintextBytes) {
@@ -1309,6 +1343,7 @@ $('sendBtn').addEventListener('click', async () => {
   const init = isPowFresh(powCache.create) ? powCache.create : null;
   if (!init) return;
 
+  createInFlight = true;
   $('sendBtn').disabled = true;
   setComposeStatus('solving');
 
@@ -1344,6 +1379,10 @@ $('sendBtn').addEventListener('click', async () => {
       }),
     });
 
+    if (powContextVersion !== version || apiBase() !== base) {
+      throw new Error('API changed while the note was being sent');
+    }
+
     if (!response.ok || !body?.ok || !body?.nid) {
       throw responseError(response, body, 'failed to create note');
     }
@@ -1352,6 +1391,7 @@ $('sendBtn').addEventListener('click', async () => {
     setComposeStatus('done');
     curNid = body.nid;
     curKey = keyB64;
+    $('noteInput').value = '';
 
     const ttlLbl = ttl === 43200 ? '12h' : '24h';
     $('linkUrl').textContent = buildHostedShareUrl(body.nid, keyB64);
@@ -1376,12 +1416,16 @@ $('sendBtn').addEventListener('click', async () => {
     createRefreshTimer = null;
     show('sLink');
   } catch (err) {
+    if (powContextVersion !== version || apiBase() !== base) return;
     powCache.create = null;
     clearTimeout(createRefreshTimer);
     createRefreshTimer = null;
     if (err?.code === 'no_pubkey') { showNoPubkeyModal(); return; }
     setComposeStatus('error', '⚠ ' + (err.message || 'error'));
     startComposeWarmup();
+  } finally {
+    createInFlight = false;
+    updateSendAvailability();
   }
 });
 
@@ -1431,6 +1475,9 @@ function resetCompose() {
   clearPowCache();
   $('noteInput').value = '';
   $('noteOutput').value = '';
+  $('linkUrl').textContent = '';
+  $('qrWrap').replaceChildren();
+  $('qrWrap').classList.add('hidden');
   updateCharMeter();
   setGatePowStatus('idle');
   $('burnTimer').textContent = '';
@@ -1525,16 +1572,24 @@ async function startComposeWarmup() {
 
 /* ── Recipient: reveal ── */
 $('revealBtn').addEventListener('click', async () => {
+  if (viewInFlight) return;
   const init = isPowFresh(powCache.view) ? powCache.view : null;
   const nonce = presolvedViewNonce;
   if (!init || !nonce) return;
 
+  const nid = curNid;
+  const key = curKey;
+  const base = apiBase();
+  const version = powContextVersion;
+  const isCurrent = () => powContextVersion === version && apiBase() === base && curNid === nid && curKey === key && isGateVisible();
+
+  viewInFlight = true;
   $('revealBtn').disabled = true;
   resetStatusEl($('gateMsg'), 'status-msg');
 
   try {
     const { response, body } = await fetchJson(
-      apiEndpoint('/api/v1/notes/' + encodeURIComponent(curNid) + '/view'),
+      apiEndpoint('/api/v1/notes/' + encodeURIComponent(nid) + '/view', base),
       {
         method: 'POST',
         headers: {
@@ -1544,10 +1599,12 @@ $('revealBtn').addEventListener('click', async () => {
         body: JSON.stringify({
           challenge: init.challenge,
           nonce,
-          view_token: await viewTokenFromKey(curKey),
+          view_token: await viewTokenFromKey(key),
         }),
       }
     );
+
+    if (!isCurrent()) return;
 
     if (response.status === 410) {
       $('burnedId').textContent = curNid ? 'id: ' + curNid + ' · already read by someone' : '';
@@ -1562,11 +1619,17 @@ $('revealBtn').addEventListener('click', async () => {
     powCache.view = null;
     clearTimeout(viewRefreshTimer);
     viewRefreshTimer = null;
-    const plain = await decrypt(body.blob, curKey);
+    const plain = await decrypt(body.blob, key);
+    if (!isCurrent()) return;
     $('noteOutput').value = plain;
+    curKey = '';
+    const cleanUrl = new URL(location.href);
+    cleanUrl.hash = '';
+    history.replaceState(null, '', cleanUrl.toString());
     $('burnTimer').textContent = 'destroyed on server';
     show('sRead');
   } catch (err) {
+    if (!isCurrent()) return;
     presolvedViewNonce = null;
     powCache.view = null;
     clearTimeout(viewRefreshTimer);
@@ -1574,6 +1637,9 @@ $('revealBtn').addEventListener('click', async () => {
     if (err?.code === 'no_pubkey') { showNoPubkeyModal(); return; }
     setGatePowStatus('error', '⚠ ' + (err.message || 'error'));
     if (isGateVisible()) startPresolveView();
+  } finally {
+    viewInFlight = false;
+    updateRevealAvailability();
   }
 });
 
@@ -1592,6 +1658,8 @@ $('copyTxtBtn').addEventListener('click', async () => {
 });
 
 $('burnBtn').addEventListener('click', () => {
+  $('noteOutput').value = '';
+  curKey = '';
   $('burnedId').textContent = curNid ? 'id: ' + curNid + ' · you closed it just now' : '';
   show('sBurned');
 });
@@ -1624,6 +1692,12 @@ function closeSettings() {
   $('oSettings').classList.add('hidden');
 }
 
+function beginApiConfiguration() {
+  apiConfigController?.abort();
+  apiConfigController = new AbortController();
+  return apiConfigController.signal;
+}
+
 $('apiBadge').addEventListener('click', openSettings);
 $('cogBtn').addEventListener('click', openSettings);
 $('closeSettings').addEventListener('click', closeSettings);
@@ -1649,21 +1723,23 @@ $('saveSettings').addEventListener('click', async () => {
   }
   const nextApi = normalizeApiUrl(candidateUrl);
   closeSettings();
+  const signal = beginApiConfiguration();
 
   if (isExternalApi(nextApi)) {
-    if (normalizedCandidatePubkey && nextApi !== confirmedApiUrl) {
+    if (normalizedCandidatePubkey) {
       // Manual pubkey entered (url|pubkey) — trust directly without modal.
       setApiPubKey(normalizedCandidatePubkey);
       saveTrustedApi(nextApi, normalizedCandidatePubkey);
       confirmedApiUrl = nextApi;
     } else if (nextApi !== confirmedApiUrl) {
-      const confirmed = await showApiConfirmModal(nextApi);
-      if (!confirmed) return;
+      const confirmed = await showApiConfirmModal(nextApi, null, signal);
+      if (!confirmed || signal.aborted) return;
       confirmedApiUrl = nextApi;
       // apiPubKeyB64 already set inside showApiConfirmModal via setApiPubKey().
     }
   } else {
-    setApiPubKey(DEFAULT_API_PUBKEY);
+    setApiPubKey(normalizedCandidatePubkey || getTrustedPubkey(nextApi) || (nextApi === DEFAULT_API ? DEFAULT_API_PUBKEY : null));
+    if (normalizedCandidatePubkey) saveTrustedApi(nextApi, normalizedCandidatePubkey);
   }
 
   apiUrl = nextApi;
@@ -1772,41 +1848,51 @@ function isExternalApi(url = apiUrl) {
   return normalizeApiUrl(url, page) !== page;
 }
 
-function showExternalApiWarningModal(url) {
+function showExternalApiWarningModal(url, signal = null) {
+  if (signal?.aborted) return Promise.resolve(false);
   return new Promise(resolve => {
     $('apiConfirmUrl').textContent = url;
     $('oApiConfirm').classList.remove('hidden');
-    setTimeout(() => $('apiConfirmAccept').focus(), 40);
+    const focusTimer = setTimeout(() => $('apiConfirmAccept').focus(), 40);
 
+    let settled = false;
     function done(result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(focusTimer);
       $('oApiConfirm').classList.add('hidden');
       $('apiConfirmAccept').removeEventListener('click', onAccept);
       $('apiConfirmReject').removeEventListener('click', onReject);
       document.removeEventListener('keydown', onKey);
       $('oApiConfirm').removeEventListener('click', onBackdrop);
+      signal?.removeEventListener('abort', onAbort);
       resolve(result);
     }
     function onAccept() { done(true); }
     function onReject() { done(false); }
     function onKey(e) { if (e.key === 'Escape') done(false); }
     function onBackdrop(e) { if (e.target === $('oApiConfirm')) done(false); }
+    function onAbort() { done(false); }
 
     $('apiConfirmAccept').addEventListener('click', onAccept);
     $('apiConfirmReject').addEventListener('click', onReject);
     document.addEventListener('keydown', onKey);
     $('oApiConfirm').addEventListener('click', onBackdrop);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
-async function showApiConfirmModal(url, pinnedPubkeyB64 = null) {
+async function showApiConfirmModal(url, pinnedPubkeyB64 = null, signal = null) {
+  if (signal?.aborted) return false;
   const normalizedUrl = normalizeApiUrl(url);
   const storedPubkey = normalizePubkeyB64(getTrustedPubkey(normalizedUrl));
   const pinnedPubkey = normalizePubkeyB64(pinnedPubkeyB64);
 
   // Auto-trust: already in trust store — verify pubkey against live /info.
   // User already accepted this API, so the request is justified without re-confirming.
-  if (storedPubkey) {
-    const verifiedPubkey = await fetchApiPubkey(normalizedUrl, storedPubkey);
+  if (storedPubkey && (!pinnedPubkey || storedPubkey === pinnedPubkey)) {
+    const verifiedPubkey = await fetchApiPubkey(normalizedUrl, storedPubkey, signal);
+    if (signal?.aborted) return false;
     if (verifiedPubkey === storedPubkey) {
       setApiPubKey(storedPubkey);
       return true;
@@ -1815,16 +1901,17 @@ async function showApiConfirmModal(url, pinnedPubkeyB64 = null) {
   }
 
   // Step 1: external API warning — shown BEFORE any /info request for new APIs.
-  const proceed = await showExternalApiWarningModal(normalizedUrl);
-  if (!proceed) return false;
+  const proceed = await showExternalApiWarningModal(normalizedUrl, signal);
+  if (!proceed || signal?.aborted) return false;
 
   if (pinnedPubkey) {
-    return await showPinnedApiTrustResult(normalizedUrl, pinnedPubkey);
+    return await showPinnedApiTrustResult(normalizedUrl, pinnedPubkey, signal);
   }
 
   // Step 2: fetch now that user confirmed. This is deliberately unsigned for
   // new or changed keys; the next modal is the trust decision.
-  const fetchedPubkey = await fetchApiPubkey(normalizedUrl, null);
+  const fetchedPubkey = await fetchApiPubkey(normalizedUrl, null, signal);
+  if (signal?.aborted) return false;
   if (!fetchedPubkey) {
     showNoPubkeyModal();
     return false;
@@ -1844,12 +1931,15 @@ async function showApiConfirmModal(url, pinnedPubkeyB64 = null) {
     statusClass,
     statusText,
     acceptLabel: keyChanged ? 'Trust new key →' : 'Trust & Add →',
+    signal,
   });
 }
 
-async function showPinnedApiTrustResult(url, pinnedPubkey) {
+async function showPinnedApiTrustResult(url, pinnedPubkey, signal = null) {
+  if (signal?.aborted) return false;
   const normalizedUrl = normalizeApiUrl(url);
-  const verifiedPubkey = await fetchApiPubkey(normalizedUrl, pinnedPubkey);
+  const verifiedPubkey = await fetchApiPubkey(normalizedUrl, pinnedPubkey, signal);
+  if (signal?.aborted) return false;
   if (verifiedPubkey === pinnedPubkey) {
     return await showApiTrustModal({
       url: normalizedUrl,
@@ -1859,10 +1949,12 @@ async function showPinnedApiTrustResult(url, pinnedPubkey) {
       statusClass: 'ok',
       statusText: 'Pinned public key matches this API.',
       acceptLabel: 'continue →',
+      signal,
     });
   }
 
-  const fetchedPubkey = await fetchApiPubkey(normalizedUrl, null);
+  const fetchedPubkey = await fetchApiPubkey(normalizedUrl, null, signal);
+  if (signal?.aborted) return false;
   if (!fetchedPubkey) {
     showNoPubkeyModal();
     return false;
@@ -1875,6 +1967,7 @@ async function showPinnedApiTrustResult(url, pinnedPubkey) {
     statusClass: 'err',
     statusText: 'Pinned public key does not match this API. The link may point to the wrong server or be intercepted.',
     allowTrust: false,
+    signal,
   });
   return false;
 }
@@ -1903,7 +1996,9 @@ async function showApiTrustModal({
   statusText = '',
   acceptLabel = 'Trust & Add →',
   allowTrust = true,
+  signal = null,
 }) {
+  if (signal?.aborted) return false;
   const hasMismatch = expectedPubkey && pubkey && pubkey !== expectedPubkey;
   $('apiTrustUrl').textContent = url;
   const pubkeyEl = $('apiTrustPubkey');
@@ -1921,15 +2016,21 @@ async function showApiTrustModal({
   $('apiTrustAccept').textContent = acceptLabel;
   $('apiTrustAccept').hidden = !allowTrust;
   $('oApiTrust').classList.remove('hidden');
-  setTimeout(() => (allowTrust ? $('apiTrustAccept') : $('apiTrustReject')).focus(), 40);
+  const focusTimer = setTimeout(() => (allowTrust ? $('apiTrustAccept') : $('apiTrustReject')).focus(), 40);
 
   return new Promise(resolve => {
+    let settled = false;
     function done(trusted) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(focusTimer);
       $('oApiTrust').classList.add('hidden');
       $('apiTrustAccept').removeEventListener('click', onAccept);
       $('apiTrustReject').removeEventListener('click', onReject);
       document.removeEventListener('keydown', onKey);
       $('oApiTrust').removeEventListener('click', onBackdrop);
+      signal?.removeEventListener('abort', onAbort);
+      trusted = trusted && !signal?.aborted;
       if (trusted) {
         saveTrustedApi(url, pubkey);
         setApiPubKey(pubkey);
@@ -1940,33 +2041,58 @@ async function showApiTrustModal({
     function onReject() { done(false); }
     function onKey(e) { if (e.key === 'Escape') done(false); }
     function onBackdrop(e) { if (e.target === $('oApiTrust')) done(false); }
+    function onAbort() { done(false); }
 
     $('apiTrustAccept').addEventListener('click', onAccept);
     $('apiTrustReject').addEventListener('click', onReject);
     document.addEventListener('keydown', onKey);
     $('oApiTrust').addEventListener('click', onBackdrop);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
 /* ── Router ── */
 async function route() {
+  const signal = beginApiConfiguration();
+  clearPowCache();
+  curNid = '';
+  curKey = '';
+  $('noteOutput').value = '';
+  $('linkUrl').textContent = '';
+  $('localLinkUrl').href = '#';
+  $('localLinkUrl').textContent = '';
+  $('qrWrap').replaceChildren();
   const params = new URLSearchParams(location.search);
   const p = params.get('p');
   const key = location.hash.slice(1);
   const apiP = params.get('api');
-  const pinP = normalizePubkeyB64(params.get('pin'));
+  const rawPin = params.get('pin');
+  const parsedApi = parseApiConfig(apiP || '');
+  const pinP = normalizePubkeyB64(parsedApi.pubkeyB64) || normalizePubkeyB64(rawPin);
+  if ((rawPin && !normalizePubkeyB64(rawPin)) ||
+      (parsedApi.pubkeyB64 && !normalizePubkeyB64(parsedApi.pubkeyB64)) ||
+      (rawPin && parsedApi.pubkeyB64 && rawPin !== parsedApi.pubkeyB64) ||
+      (apiP && !isSafeApiTransport(parsedApi.urlStr))) {
+    clearPowCache();
+    const hasNote = p && key && NID_RE.test(p) && KEY_RE.test(key);
+    show(hasNote ? 'sGate' : 'sCompose');
+    if (hasNote) setGatePowStatus('error', 'Invalid API URL or public key in link');
+    else setComposeStatus('error', 'Invalid API URL or public key in link');
+    return;
+  }
 
   if (apiP) {
     const { urlStr: apiPUrl, pubkeyB64: apiPKey } = parseApiConfig(apiP);
     if (isSafeApiTransport(apiPUrl)) {
       apiUrl = normalizeApiUrl(apiPUrl);
-      setApiPubKey(apiPKey || pinP);
+      setApiPubKey(apiPKey || pinP || getTrustedPubkey(apiUrl) || (apiUrl === DEFAULT_API ? DEFAULT_API_PUBKEY : null));
       clearPowCache();
     }
   } else if (p && key) {
     const hostedApi = hostedDefaultApi();
     if (hostedApi && hostedApi !== apiUrl) {
       apiUrl = hostedApi;
+      setApiPubKey(getTrustedPubkey(apiUrl) || (apiUrl === DEFAULT_API ? DEFAULT_API_PUBKEY : null));
       clearPowCache();
     }
     if (pinP) setApiPubKey(pinP);
@@ -1974,8 +2100,10 @@ async function route() {
 
   updateApiDisplay(apiUrl);
 
-  if (!isExternalApi() && pinP && apiUrl !== confirmedApiUrl) {
-    const confirmed = await showPinnedApiTrustResult(apiUrl, pinP);
+  // A pin in a shared link is checked on every navigation, even for a previously confirmed origin.
+  if (!isExternalApi() && pinP) {
+    const confirmed = await showPinnedApiTrustResult(apiUrl, pinP, signal);
+    if (signal.aborted) return;
     if (!confirmed) {
       if (p && key && NID_RE.test(p) && KEY_RE.test(key)) {
         curNid = p;
@@ -1988,9 +2116,10 @@ async function route() {
       return;
     }
     confirmedApiUrl = apiUrl;
-  } else if (isExternalApi() && apiUrl !== confirmedApiUrl) {
+  } else if (isExternalApi() && (apiUrl !== confirmedApiUrl || pinP)) {
     const hadPinnedApi = !!apiPubKeyB64;
-    const confirmed = await showApiConfirmModal(apiUrl, apiPubKeyB64);
+    const confirmed = await showApiConfirmModal(apiUrl, apiPubKeyB64, signal);
+    if (signal.aborted) return;
     if (!confirmed) {
       if (hadPinnedApi && p && key && NID_RE.test(p) && KEY_RE.test(key)) {
         curNid = p;
@@ -2000,7 +2129,7 @@ async function route() {
         return;
       }
       apiUrl = hostedDefaultApi();
-      setApiPubKey(DEFAULT_API_PUBKEY);
+      setApiPubKey(getTrustedPubkey(apiUrl) || (apiUrl === DEFAULT_API ? DEFAULT_API_PUBKEY : null));
       storageSet(LS_KEY, '');
       clearPowCache();
       updateApiDisplay(apiUrl);
@@ -2072,6 +2201,7 @@ if (ENABLE_MODEL_CONTEXT_TOOLS && typeof navigator !== 'undefined' && navigator.
             headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
             body: JSON.stringify({ alg: 'aes-256-gcm', challenge: init.challenge, nonce, ttl, blob, view_token: viewTokenB64 }),
           });
+          if (powContextVersion !== version || apiBase() !== base) return { error: 'API changed while the note was being sent' };
           if (!response.ok || !body?.ok || !body?.nid || !NID_RE.test(body.nid)) {
             return { error: body?.error?.message || 'failed to create note' };
           }

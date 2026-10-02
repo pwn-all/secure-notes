@@ -1,0 +1,12 @@
+.git
+target
+.env
+.env.*
+!.env.example
+.aws
+.codex
+.agents
+**/*.pem
+**/*.key
+**/*.log
+**/.DS_Store

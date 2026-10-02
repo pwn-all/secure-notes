@@ -9,6 +9,10 @@ use axum::{
 use axum_server::{Handle, tls_rustls::RustlsConfig};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::SigningKey;
+use hyper_util::{
+    rt::{TokioExecutor, TokioTimer},
+    server::conn::auto::Builder as HttpBuilder,
+};
 use rand::RngExt;
 use secure_notes::{AppConfig, AppState, build_router, spawn_cleanup_task};
 use tokio::signal;
@@ -53,7 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_addr: SocketAddr = http_bind_addr.parse()?;
     let https_addr: SocketAddr = https_bind_addr.parse()?;
     let https_port = https_addr.port();
-    let tls_config = RustlsConfig::from_pem_file(tls_cert_path, tls_key_path).await?;
+    let tls_config = RustlsConfig::from_pem_file(&tls_cert_path, &tls_key_path).await?;
+    #[cfg(unix)]
+    let _tls_reload_handle =
+        spawn_tls_reload_task(tls_config.clone(), tls_cert_path, tls_key_path)?;
 
     let signing_key = load_or_generate_signing_key()?;
     let state = AppState::with_signing_key(config, Some(signing_key));
@@ -77,16 +84,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("HTTP redirect listening on {}", http_addr);
     info!("HTTPS listening on {}", https_addr);
 
-    let http_server = axum_server::bind(http_addr)
-        .handle(handle.clone())
-        .serve(redirect_app.into_make_service());
-    let https_server = axum_server::bind_rustls(https_addr, tls_config)
-        .handle(handle)
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>());
+    let mut http_listener = axum_server::bind(http_addr).handle(handle.clone());
+    configure_http(http_listener.http_builder());
+    let http_server = http_listener.serve(redirect_app.into_make_service());
+
+    let mut https_listener = axum_server::bind_rustls(https_addr, tls_config).handle(handle);
+    configure_http(https_listener.http_builder());
+    let https_server =
+        https_listener.serve(app.into_make_service_with_connect_info::<SocketAddr>());
 
     tokio::try_join!(http_server, https_server)?;
 
     Ok(())
+}
+
+fn configure_http(builder: &mut HttpBuilder<TokioExecutor>) {
+    // Hyper's default header deadline is inactive unless a timer is installed.
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(Duration::from_secs(10))
+        .max_buf_size(32 * 1024)
+        .max_headers(64);
+
+    builder
+        .http2()
+        .timer(TokioTimer::new())
+        .max_concurrent_streams(64)
+        .max_header_list_size(16 * 1024)
+        .max_send_buf_size(64 * 1024)
+        .keep_alive_interval(Duration::from_secs(30))
+        .keep_alive_timeout(Duration::from_secs(10));
+}
+
+#[cfg(unix)]
+fn spawn_tls_reload_task(
+    config: RustlsConfig,
+    cert_path: String,
+    key_path: String,
+) -> io::Result<tokio::task::JoinHandle<()>> {
+    let mut hangup = signal::unix::signal(signal::unix::SignalKind::hangup())?;
+    Ok(tokio::spawn(async move {
+        while hangup.recv().await.is_some() {
+            match config.reload_from_pem_file(&cert_path, &key_path).await {
+                Ok(()) => info!("TLS certificate reloaded without restarting the server"),
+                Err(error) => tracing::warn!(
+                    error_kind = ?error.kind(),
+                    "TLS certificate reload failed; keeping previous TLS configuration"
+                ),
+            }
+        }
+    }))
 }
 
 async fn redirect_http_to_https(
@@ -249,5 +297,83 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn public_host_overrides_untrusted_redirect_host() {
+        let config = RedirectState {
+            https_port: 8443,
+            public_host: Some("notes.example.com".to_owned()),
+        };
+        assert_eq!(
+            authority_for_https(Some("attacker.example"), &config),
+            Some("notes.example.com:8443".to_owned())
+        );
+        assert_eq!(
+            authority_for_https(None, &config),
+            Some("notes.example.com:8443".to_owned())
+        );
+    }
+
+    #[test]
+    fn redirect_host_validation_rejects_ambiguous_authorities() {
+        for host in [
+            "",
+            "user@notes.example.com",
+            "notes.example.com/path",
+            "notes.example.com\\attacker.example",
+            "notes.example.com:65536",
+            "notes.example.com:invalid",
+            "notes.example.com#fragment",
+            "notes.example.com?query",
+            "-notes.example.com",
+            "notes..example.com",
+            "[localhost]",
+        ] {
+            assert_eq!(normalize_redirect_host(host), None, "accepted {host}");
+        }
+        assert_eq!(
+            normalize_redirect_host("NOTES.Example.com:80"),
+            Some("notes.example.com".to_owned())
+        );
+        assert_eq!(
+            normalize_redirect_host("[::1]:80"),
+            Some("[::1]".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_http_headers_are_closed_before_reaching_the_router() {
+        let (mut stream, server_stream) = tokio::io::duplex(1024);
+        let mut builder = HttpBuilder::new(TokioExecutor::new());
+        configure_http(&mut builder);
+        let service = TowerToHyperService::new(
+            Router::new().fallback(|| async { "unexpected router response" }),
+        );
+        let task = tokio::spawn(async move {
+            builder
+                .serve_connection(TokioIo::new(server_stream), service)
+                .await
+        });
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Slow: ")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(12), stream.read_to_end(&mut response)).await;
+        task.abort();
+        assert!(outcome.is_ok(), "incomplete headers remained open");
+        assert!(
+            !String::from_utf8_lossy(&response).contains("unexpected router response"),
+            "incomplete request reached the router"
+        );
     }
 }

@@ -4,7 +4,7 @@ SecNote is a free, open-source, browser-based tool for sending one-time encrypte
 
 **Live app:** /  
 **Source code:** https://github.com/pwn-all/secure-notes  
-**API status:** /stat  
+**API status:** /info
 
 ## How It Works
 
@@ -50,7 +50,7 @@ Returns a SHA-256 Proof-of-Work challenge that must be solved before creating or
     "challenge": "<base64url>"
   },
   "encryption": { "alg": "aes-256-gcm", "key_bytes": 32, "nonce_bytes": 12, "tag_bytes": 16 },
-  "limits": { "max_plaintext_bytes": 4096, "max_blob_bytes": 16384, "ttls": [43200, 86400] }
+  "limits": { "max_plaintext_bytes": 32768, "max_blob_bytes": 49152, "ttls": [43200, 86400] }
 }
 ```
 
@@ -94,14 +94,14 @@ Returns the encrypted blob. The note is permanently deleted atomically. Returns 
 ### Server statistics
 
 ```
-GET /stat
+GET /info
 ```
 
-Returns `{ "notes": <count>, "ram_usage": "<mb>" }`.
+Returns `{ "ok": true, "notes": <count>, "ram_usage": "<mb>", "pubkey": "<base64url>" }`. The official client verifies Ed25519 v2 signatures against a trusted public key, a fresh request ID, and the full request context before parsing API responses. See the source README for the signing format and trust model.
 
 ## Privacy
 
-- No personally identifiable information collected
+- The backend keeps salted IP hashes in transient anti-abuse state
 - No cookies, no analytics, no tracking
-- Server access logs retained ≤ 7 days for security purposes
-- GDPR compliant
+- Access logs and their retention depend on the instance operator and deployment
+- RAM storage does not prevent operating-system swap, snapshots, or core dumps

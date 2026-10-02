@@ -22,7 +22,10 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tokio::{sync::Mutex, time::Duration};
+use tokio::{
+    sync::{Mutex, Semaphore},
+    time::Duration,
+};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
@@ -38,6 +41,9 @@ const GENERATED_NID_BYTES: usize = 16;
 const GENERATED_NID_B64_LEN: usize = 22;
 const JSON_BODY_OVERHEAD_BYTES: usize = 2048;
 const SIG_BODY_LIMIT: usize = 512 * 1024;
+const MAX_SUPPORTED_BLOB_BYTES: usize = 48 * 1024;
+const REQUEST_ID_HEADER: &str = "x-secnote-request-id";
+const SIGNATURE_V2_HEADER: &str = "x-secnote-sig-v2";
 const DEFAULT_MAX_ACTIVE_CHALLENGES: usize = 10_000;
 const DEFAULT_MAX_NOTES: usize = 50_000;
 const DEFAULT_MAX_TRACKING_ENTRIES: usize = 100_000;
@@ -61,6 +67,8 @@ pub struct AppConfig {
     pub max_blob_bytes: usize,
     pub max_active_challenges: usize,
     pub max_notes: usize,
+    pub max_note_storage_bytes: usize,
+    pub max_concurrent_api_requests: usize,
     pub max_tracking_entries: usize,
     pub pow_fail_window_secs: u64,
     pub ban_short_secs: u64,
@@ -95,13 +103,19 @@ impl AppConfig {
             pow_bits_create_max,
             pow_bits_view,
             pow_bits_view_max,
-            max_plaintext_bytes: parse_env_usize("MAX_PLAINTEXT_BYTES", 32768),
-            max_blob_bytes: parse_env_usize("MAX_BLOB_BYTES", 48 * 1024),
+            max_plaintext_bytes: parse_env_usize("MAX_PLAINTEXT_BYTES", 32768).clamp(1, 32768),
+            max_blob_bytes: parse_env_usize("MAX_BLOB_BYTES", MAX_SUPPORTED_BLOB_BYTES).clamp(
+                ((NOTE_NONCE_BYTES + NOTE_TAG_BYTES + 1) * 4).div_ceil(3),
+                MAX_SUPPORTED_BLOB_BYTES,
+            ),
             max_active_challenges: parse_env_usize(
                 "MAX_ACTIVE_CHALLENGES",
                 DEFAULT_MAX_ACTIVE_CHALLENGES,
             ),
             max_notes: parse_env_usize("MAX_NOTES", DEFAULT_MAX_NOTES),
+            max_note_storage_bytes: parse_env_usize("MAX_NOTE_STORAGE_BYTES", 64 * 1024 * 1024),
+            max_concurrent_api_requests: parse_env_usize("MAX_CONCURRENT_API_REQUESTS", 64)
+                .clamp(1, 1024),
             max_tracking_entries: parse_env_usize(
                 "MAX_TRACKING_ENTRIES",
                 DEFAULT_MAX_TRACKING_ENTRIES,
@@ -157,7 +171,8 @@ struct StateInner {
     config: AppConfig,
     signing_key: Option<SigningKey>,
     challenges: Mutex<HashMap<String, ChallengeEntry>>,
-    notes: Mutex<HashMap<String, NoteEntry>>,
+    notes: Mutex<NoteStore>,
+    api_permits: Semaphore,
     abuse: Mutex<HashMap<String, AbuseEntry>>,
     rate_windows: Mutex<HashMap<String, RateEntry>>,
 }
@@ -184,6 +199,31 @@ struct NoteEntry {
     expires_at: u64,
 }
 
+#[derive(Default)]
+struct NoteStore {
+    entries: HashMap<String, NoteEntry>,
+    blob_bytes: usize,
+}
+
+impl NoteStore {
+    fn remove(&mut self, nid: &str) -> Option<NoteEntry> {
+        let note = self.entries.remove(nid)?;
+        self.blob_bytes -= note.blob.len();
+        Some(note)
+    }
+
+    fn remove_expired(&mut self, now: u64) {
+        self.entries.retain(|_, note| {
+            if note.expires_at <= now {
+                self.blob_bytes -= note.blob.len();
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
 #[derive(Clone, Default)]
 struct AbuseEntry {
     fail_count: u32,
@@ -205,10 +245,11 @@ impl AppState {
     pub fn with_signing_key(config: AppConfig, signing_key: Option<SigningKey>) -> Self {
         Self {
             inner: Arc::new(StateInner {
+                api_permits: Semaphore::new(config.max_concurrent_api_requests),
                 config,
                 signing_key,
                 challenges: Mutex::new(HashMap::new()),
-                notes: Mutex::new(HashMap::new()),
+                notes: Mutex::new(NoteStore::default()),
                 abuse: Mutex::new(HashMap::new()),
                 rate_windows: Mutex::new(HashMap::new()),
             }),
@@ -234,7 +275,7 @@ impl AppState {
 
         {
             let mut notes = self.inner.notes.lock().await;
-            notes.retain(|_, n| n.expires_at > now);
+            notes.remove_expired(now);
         }
 
         {
@@ -253,41 +294,25 @@ impl AppState {
 
     async fn stat_snapshot(&self) -> StatSnapshot {
         let notes_guard = self.inner.notes.lock().await;
-        let notes_count = notes_guard.len();
-        let notes_bytes = notes_guard
-            .iter()
-            .map(|(nid, note)| {
-                size_of::<String>() + nid.len() + size_of::<NoteEntry>() + note.blob.len() + 32 // rough HashMap bucket/allocator overhead per note entry
-            })
-            .sum::<usize>();
+        let notes_count = notes_guard.entries.len();
+        let notes_bytes = notes_guard.blob_bytes
+            + notes_count
+                * (size_of::<String>() + GENERATED_NID_B64_LEN + size_of::<NoteEntry>() + 32);
         drop(notes_guard);
 
         let challenges_guard = self.inner.challenges.lock().await;
-        let challenges_bytes = challenges_guard
-            .iter()
-            .map(|(challenge_id, challenge)| {
-                size_of::<String>()
-                    + challenge_id.len()
-                    + size_of::<ChallengeEntry>()
-                    + challenge.client_key.len()
-                    + challenge.challenge_bytes.len()
-                    + 32
-            })
-            .sum::<usize>();
+        let challenges_bytes = challenges_guard.len()
+            * (size_of::<String>() + 32 + size_of::<ChallengeEntry>() + 43 + CHALLENGE_BYTES + 32);
         drop(challenges_guard);
 
         let abuse_guard = self.inner.abuse.lock().await;
-        let abuse_bytes = abuse_guard
-            .keys()
-            .map(|k| size_of::<String>() + k.len() + size_of::<AbuseEntry>() + 24)
-            .sum::<usize>();
+        let abuse_bytes =
+            abuse_guard.len() * (size_of::<String>() + 43 + size_of::<AbuseEntry>() + 24);
         drop(abuse_guard);
 
         let rates_guard = self.inner.rate_windows.lock().await;
-        let rates_bytes = rates_guard
-            .keys()
-            .map(|k| size_of::<String>() + k.len() + size_of::<RateEntry>() + 24)
-            .sum::<usize>();
+        let rates_bytes =
+            rates_guard.len() * (size_of::<String>() + 50 + size_of::<RateEntry>() + 24);
 
         StatSnapshot {
             notes: notes_count,
@@ -484,23 +509,104 @@ async fn sign_response_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let should_sign = {
-        let p = req.uri().path();
-        p == "/info" || p.starts_with("/api/v1/")
-    };
+    let p = req.uri().path();
+    if p != "/info" && !p.starts_with("/api/v1/") {
+        return next.run(req).await;
+    }
 
-    let response = next.run(req).await;
+    // Reject overload before buffering JSON or waiting on a shared state lock.
+    let Ok(_permit) = state.inner.api_permits.try_acquire() else {
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server_busy",
+            "too many active requests",
+        )
+        .with_retry_after(5)
+        .into_response();
+    };
+    let request_id = match req.headers().get(REQUEST_ID_HEADER) {
+        None => String::new(), // Legacy clients may omit the freshness nonce.
+        Some(value) => match value.to_str().ok().filter(|id| {
+            id.len() == GENERATED_NID_B64_LEN
+                && URL_SAFE_NO_PAD.decode(id).is_ok_and(|v| v.len() == 16)
+        }) {
+            Some(value) => value.to_owned(),
+            None => {
+                return ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_id",
+                    "invalid request id",
+                )
+                .into_response();
+            }
+        },
+    };
+    let method = req.method().to_string();
+    let target = req
+        .uri()
+        .path_and_query()
+        .map(|v| v.as_str())
+        .unwrap_or("/")
+        .to_owned();
+    let (parts, body) = req.into_parts();
+    let body_limit = state
+        .config()
+        .max_blob_bytes
+        .saturating_add(JSON_BODY_OVERHEAD_BYTES);
+    let request_bytes =
+        match tokio::time::timeout(Duration::from_secs(10), to_bytes(body, body_limit)).await {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(_)) => {
+                return ApiError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "body_too_large",
+                    "request body is too large or unreadable",
+                )
+                .into_response();
+            }
+            Err(_) => {
+                return ApiError::new(
+                    StatusCode::REQUEST_TIMEOUT,
+                    "request_timeout",
+                    "request timed out",
+                )
+                .into_response();
+            }
+        };
+    let request_hash = URL_SAFE_NO_PAD.encode(sha256_bytes(&request_bytes));
+    let request = Request::from_parts(parts, Body::from(request_bytes));
+    let response = match tokio::time::timeout(Duration::from_secs(10), next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => ApiError::new(
+            StatusCode::REQUEST_TIMEOUT,
+            "request_timeout",
+            "request timed out",
+        )
+        .into_response(),
+    };
 
     let Some(signing_key) = state.inner.signing_key.as_ref() else {
         return response;
     };
-    if !should_sign {
-        return response;
-    }
 
-    let (mut parts, body) = response.into_parts();
-    let Ok(bytes) = to_bytes(body, SIG_BODY_LIMIT).await else {
-        return Response::from_parts(parts, Body::empty());
+    let (parts, body) = response.into_parts();
+    let (mut parts, bytes) = match to_bytes(body, SIG_BODY_LIMIT).await {
+        Ok(bytes) => (parts, bytes),
+        Err(_) => {
+            let error = ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response_error",
+                "response unavailable",
+            )
+            .into_response();
+            let (parts, body) = error.into_parts();
+            (
+                parts,
+                to_bytes(body, SIG_BODY_LIMIT)
+                    .await
+                    .expect("fixed error body fits signing limit"),
+            )
+        }
     };
 
     let sig = signing_key.sign(&bytes);
@@ -511,7 +617,38 @@ async fn sign_response_middleware(
             .insert(header::HeaderName::from_static("x-secnote-sig"), val);
     }
 
+    let message = response_signature_message(
+        &method,
+        &target,
+        &request_id,
+        &request_hash,
+        parts.status,
+        &bytes,
+    );
+    let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(&message).to_bytes());
+    parts.headers.insert(
+        header::HeaderName::from_static(SIGNATURE_V2_HEADER),
+        HeaderValue::from_str(&signature).expect("base64url signature is a valid header"),
+    );
+
     Response::from_parts(parts, Body::from(bytes))
+}
+
+fn response_signature_message(
+    method: &str,
+    target: &str,
+    request_id: &str,
+    request_hash: &str,
+    status: StatusCode,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut message = format!(
+        "secnote-response-v2\n{method}\n{target}\n{request_id}\n{request_hash}\n{}\n",
+        status.as_u16()
+    )
+    .into_bytes();
+    message.extend_from_slice(body);
+    message
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -539,8 +676,16 @@ pub fn build_router(state: AppState) -> Router {
             CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods([Method::GET, Method::POST])
-                .allow_headers([header::CONTENT_TYPE, header::ACCEPT])
-                .expose_headers([header::HeaderName::from_static("x-secnote-sig")]),
+                .allow_headers([
+                    header::CONTENT_TYPE,
+                    header::ACCEPT,
+                    header::HeaderName::from_static(REQUEST_ID_HEADER),
+                ])
+                .expose_headers([
+                    header::HeaderName::from_static("x-secnote-sig"),
+                    header::HeaderName::from_static(SIGNATURE_V2_HEADER),
+                    header::RETRY_AFTER,
+                ]),
         )
 }
 
@@ -592,7 +737,9 @@ async fn init_handler(
     };
     let (challenge, bits, expires_at) = {
         let mut challenges = state.inner.challenges.lock().await;
-        challenges.retain(|_, c| c.expires_at > now);
+        if challenges.len() >= state.config().max_active_challenges {
+            challenges.retain(|_, c| c.expires_at > now);
+        }
 
         if challenges.len() >= state.config().max_active_challenges {
             return Err(ApiError::new(
@@ -796,16 +943,25 @@ async fn create_note_handler(
 
     {
         let mut notes = state.inner.notes.lock().await;
-        notes.retain(|_, note| note.expires_at > now);
-        if notes.len() >= state.config().max_notes {
+        if notes.entries.len() >= state.config().max_notes
+            || notes.blob_bytes.saturating_add(payload.blob.len())
+                > state.config().max_note_storage_bytes
+        {
+            notes.remove_expired(now);
+        }
+        if notes.entries.len() >= state.config().max_notes
+            || notes.blob_bytes.saturating_add(payload.blob.len())
+                > state.config().max_note_storage_bytes
+        {
             return Err(ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "server_busy",
-                "too many active notes",
+                "note storage capacity reached",
             )
             .with_retry_after(30));
         }
-        notes.insert(
+        notes.blob_bytes += payload.blob.len();
+        notes.entries.insert(
             nid.clone(),
             NoteEntry {
                 blob: payload.blob,
@@ -930,7 +1086,7 @@ async fn view_note_handler(
 
     let note = {
         let mut notes = state.inner.notes.lock().await;
-        let Some(existing) = notes.get(&nid) else {
+        let Some(existing) = notes.entries.get(&nid) else {
             return Err(ApiError::new(StatusCode::GONE, "gone", "note is gone"));
         };
         if existing.expires_at <= now {
@@ -1387,6 +1543,8 @@ mod tests {
             max_blob_bytes: 48 * 1024,
             max_active_challenges: DEFAULT_MAX_ACTIVE_CHALLENGES,
             max_notes: DEFAULT_MAX_NOTES,
+            max_note_storage_bytes: 64 * 1024 * 1024,
+            max_concurrent_api_requests: 64,
             max_tracking_entries: DEFAULT_MAX_TRACKING_ENTRIES,
             pow_fail_window_secs: 600,
             ban_short_secs: 300,
@@ -1511,6 +1669,241 @@ mod tests {
                 .to_owned(),
             body["pow"]["bits"].as_u64().unwrap_or(0) as u8,
         )
+    }
+
+    async fn create_test_note(app: &Router, blob: &str) -> (StatusCode, Value) {
+        let (challenge, bits) = init_once(app, "create").await;
+        let ttl = NOTE_TTLS[0];
+        let nonce = solve_pow_for_create(&challenge, bits, ttl, blob);
+        let (status, _, body) = send_json(
+            app,
+            Method::POST,
+            "/api/v1/notes",
+            Some(json!({
+                "alg": NOTE_ALG, "challenge": challenge, "nonce": nonce, "ttl": ttl,
+                "blob": blob, "view_token": test_view_token()
+            })),
+        )
+        .await;
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn note_storage_budget_is_released_after_read_and_expiry() {
+        let blob = fake_aes_blob(b"budget test");
+        let mut config = test_config();
+        config.max_note_storage_bytes = blob.len();
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let (status, body) = create_test_note(&app, &blob).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            create_test_note(&app, &blob).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let nid = body["nid"].as_str().unwrap();
+        let (challenge, bits) = init_once(&app, "view").await;
+        let nonce = solve_pow_for_view(&challenge, bits, nid);
+        let (status, _, _) = send_json(
+            &app,
+            Method::POST,
+            &format!("/api/v1/notes/{nid}/view"),
+            Some(json!({
+                "challenge": challenge, "nonce": nonce, "view_token": test_view_token()
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(state.inner.notes.lock().await.blob_bytes, 0);
+        assert_eq!(create_test_note(&app, &blob).await.0, StatusCode::OK);
+        state.cleanup_expired(now_ts() + NOTE_TTLS[0] + 1).await;
+        assert_eq!(state.inner.notes.lock().await.blob_bytes, 0);
+        assert_eq!(create_test_note(&app, &blob).await.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn active_request_limit_rejects_overload_and_recovers() {
+        let mut config = test_config();
+        config.max_concurrent_api_requests = 1;
+        let state = AppState::new(config);
+        let app = build_router(state.clone());
+        let permit = state.inner.api_permits.acquire().await.unwrap();
+        let (status, headers, body) = send_json(&app, Method::GET, "/info", None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "server_busy");
+        assert!(headers.contains_key(header::RETRY_AFTER));
+        drop(permit);
+        assert_eq!(
+            send_json(&app, Method::GET, "/info", None).await.0,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn request_body_limit_applies_before_json_parsing() {
+        let mut config = test_config();
+        config.max_blob_bytes = 100;
+        let app = build_router(AppState::new(config));
+        let (status, _, body) = send_json(
+            &app,
+            Method::POST,
+            "/api/v1/notes",
+            Some(json!({
+                "padding": "x".repeat(JSON_BODY_OVERHEAD_BYTES + 101)
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body["error"]["code"], "body_too_large");
+    }
+
+    #[tokio::test]
+    async fn signatures_bind_status_method_target_nonce_and_request_body() {
+        use ed25519_dalek::Signature;
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let verify_key = key.verifying_key();
+        let app = build_router(AppState::with_signing_key(test_config(), Some(key)));
+        let request_id = URL_SAFE_NO_PAD.encode([1; 16]);
+        let target = "/api/v1/init?scope=invalid";
+        let request_body = b"{}";
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(target)
+            .extension(ConnectInfo(
+                "203.0.113.10:40000".parse::<SocketAddr>().unwrap(),
+            ))
+            .header(REQUEST_ID_HEADER, &request_id)
+            .body(Body::from(request_body.as_slice()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let signature = Signature::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(response.headers()[SIGNATURE_V2_HEADER].as_bytes())
+                .unwrap(),
+        )
+        .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let request_hash = URL_SAFE_NO_PAD.encode(sha256_bytes(request_body));
+        let message = response_signature_message(
+            "GET",
+            target,
+            &request_id,
+            &request_hash,
+            StatusCode::BAD_REQUEST,
+            &body,
+        );
+        assert!(verify_key.verify_strict(&message, &signature).is_ok());
+        for mutated in [
+            response_signature_message(
+                "POST",
+                target,
+                &request_id,
+                &request_hash,
+                StatusCode::BAD_REQUEST,
+                &body,
+            ),
+            response_signature_message(
+                "GET",
+                "/info",
+                &request_id,
+                &request_hash,
+                StatusCode::BAD_REQUEST,
+                &body,
+            ),
+            response_signature_message(
+                "GET",
+                target,
+                "another-request",
+                &request_hash,
+                StatusCode::BAD_REQUEST,
+                &body,
+            ),
+            response_signature_message(
+                "GET",
+                target,
+                &request_id,
+                "another-body",
+                StatusCode::BAD_REQUEST,
+                &body,
+            ),
+            response_signature_message(
+                "GET",
+                target,
+                &request_id,
+                &request_hash,
+                StatusCode::OK,
+                &body,
+            ),
+            response_signature_message(
+                "GET",
+                target,
+                &request_id,
+                &request_hash,
+                StatusCode::BAD_REQUEST,
+                b"tampered",
+            ),
+        ] {
+            assert!(verify_key.verify_strict(&mutated, &signature).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn server_signature_matches_the_frontend_interoperability_vector() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/signed-response.json")).unwrap();
+        let app = build_router(AppState::with_signing_key(
+            test_config(),
+            Some(SigningKey::from_bytes(&[7; 32])),
+        ));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/info")
+                    .header(
+                        REQUEST_ID_HEADER,
+                        fixture["context"]["requestId"].as_str().unwrap(),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers()[SIGNATURE_V2_HEADER],
+            fixture["signature"].as_str().unwrap()
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], fixture["body"].as_str().unwrap().as_bytes());
+    }
+
+    #[tokio::test]
+    async fn cors_supports_signed_requests_from_an_offline_frontend() {
+        let app = build_router(AppState::new(test_config()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/api/v1/notes")
+                    .header(header::ORIGIN, "null")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(
+                        header::ACCESS_CONTROL_REQUEST_HEADERS,
+                        "content-type,x-secnote-request-id",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+        assert!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS]
+                .to_str()
+                .unwrap()
+                .contains(REQUEST_ID_HEADER)
+        );
     }
 
     #[tokio::test]
