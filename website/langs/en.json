@@ -67,7 +67,6 @@
   "LINK_QR_HIDE": "Hide QR",
   "LINK_QR_FAILED": "Could not draw the QR code",
   "LINK_LOCAL_COPY": "Open with this local copy (this device only):",
-  "SENT_HIDDEN": "hidden · click to show",
   "GATE_TITLE": "Someone sent you a one-time secret.",
   "GATE_WARN": "Opening it destroys it on the server immediately — it can be read only once.",
   "GATE_REVEAL": "Read and destroy",

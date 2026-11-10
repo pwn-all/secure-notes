@@ -67,7 +67,6 @@
   "LINK_QR_HIDE": "QR ausblenden",
   "LINK_QR_FAILED": "QR-Code konnte nicht erzeugt werden",
   "LINK_LOCAL_COPY": "Mit dieser lokalen Kopie öffnen (nur auf diesem Gerät):",
-  "SENT_HIDDEN": "verborgen · zum Anzeigen klicken",
   "GATE_TITLE": "Jemand hat Ihnen ein Einmal-Geheimnis geschickt.",
   "GATE_WARN": "Beim Öffnen wird es sofort auf dem Server vernichtet — es kann nur einmal gelesen werden.",
   "GATE_REVEAL": "Lesen und vernichten",

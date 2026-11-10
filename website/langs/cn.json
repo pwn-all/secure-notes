@@ -67,7 +67,6 @@
   "LINK_QR_HIDE": "隐藏二维码",
   "LINK_QR_FAILED": "无法生成二维码",
   "LINK_LOCAL_COPY": "用此本地副本打开（仅限本设备）：",
-  "SENT_HIDDEN": "已隐藏 · 点击显示",
   "GATE_TITLE": "有人给您发送了一条一次性秘密。",
   "GATE_WARN": "打开后，它会立即在服务器上销毁——只能读取一次。",
   "GATE_REVEAL": "读取并销毁",

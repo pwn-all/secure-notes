@@ -29,11 +29,6 @@
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
   --w: 760px;
-  --dock-gap: 10vh;
-}
-
-@supports (height: 1dvh) {
-  :root { --dock-gap: 10dvh; }
 }
 
 @media (prefers-color-scheme: light) {
@@ -230,9 +225,6 @@ code { background: var(--surface-2); border-radius: 5px; padding: .05em .35em; }
 }
 [dir="rtl"] .msg-user .bubble { border-radius: 20px 20px 20px 6px; }
 .bubble-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.secret-masked .bubble-text { filter: blur(6px); user-select: none; cursor: pointer; transition: filter .2s; }
-.secret-masked .bubble { position: relative; }
-.mask-hint { font-size: 12px; color: var(--ink-mute); cursor: pointer; }
 .msg-meta { font-size: 12px; color: var(--ink-mute); }
 
 .msg-bot .avatar {
@@ -291,16 +283,20 @@ code { background: var(--surface-2); border-radius: 5px; padding: .05em .35em; }
   text-align: left;
 }
 .link-key { color: var(--accent); }
-/* The link holds the key: blurred until hovered (desktop) or tapped (3 s, see LINK_REVEAL_MS). */
-.link-box.masked { cursor: pointer; user-select: none; }
-.link-box.masked .link-text { display: block; filter: blur(6px); transition: filter .2s ease; }
+/* The sent secret and the link (it holds the key) stay blurred until hovered (desktop) or tapped
+   (3 s, see LINK_REVEAL_MS). */
+.masked { cursor: pointer; user-select: none; }
+.masked .link-text, .masked .bubble-text { filter: blur(6px); transition: filter .2s ease; }
+.link-box.masked .link-text { display: block; }
+.masked.revealed .link-text, .masked.revealed .bubble-text,
+.masked:focus-visible .link-text, .masked:focus-visible .bubble-text { filter: none; }
 .link-box.masked.revealed { user-select: all; }
-.link-box.masked.revealed .link-text { filter: none; }
+.bubble.masked.revealed { user-select: text; }
 @media (hover: hover) and (pointer: fine) {
+  .masked:hover .link-text, .masked:hover .bubble-text { filter: none; }
   .link-box.masked:hover { user-select: all; }
-  .link-box.masked:hover .link-text { filter: none; }
+  .bubble.masked:hover { user-select: text; }
 }
-.link-box.masked:focus-visible .link-text { filter: none; }
 .link-actions, .note-actions, .gate-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .link-hint, .note-hint { font-size: 12.5px; color: var(--ink-mute); }
 .qr-wrap { display: inline-block; padding: 10px; background: #fff; border-radius: 12px; line-height: 0; }
@@ -374,8 +370,8 @@ code { background: var(--surface-2); border-radius: 5px; padding: .05em .35em; }
 
 /* ── Dock / composer ── */
 .dock {
-  padding: 0 16px max(12px, calc(var(--dock-gap) - 26px));
-  padding-bottom: max(12px, calc(var(--dock-gap) - 26px), env(safe-area-inset-bottom));
+  padding: 0 16px 16px;
+  padding-bottom: max(clamp(12px, 2.4vh, 28px), env(safe-area-inset-bottom));
   position: relative;
 }
 .composer {
@@ -843,10 +839,10 @@ code { background: var(--surface-2); border-radius: 5px; padding: .05em .35em; }
 
 /* ── Very large screens: scale the whole interface instead of a tiny column ── */
 @media (min-width: 2200px) and (min-height: 1150px) {
-  :root { --ui-zoom: 1.3; --dock-gap: calc(10dvh / 1.3); }
+  :root { --ui-zoom: 1.3; }
 }
 @media (min-width: 3000px) and (min-height: 1600px) {
-  :root { --ui-zoom: 1.7; --dock-gap: calc(10dvh / 1.7); }
+  :root { --ui-zoom: 1.7; }
 }
 .app, .overlay, .drop-zone { zoom: var(--ui-zoom, 1); }
 

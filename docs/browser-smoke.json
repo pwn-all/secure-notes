@@ -17,14 +17,14 @@
   "auditedPerViewport": [
     "no horizontal page scroll and no visible element outside the viewport",
     "no clipped button or chip text",
-    "composer inside the viewport, 10% above the bottom edge (compensated for interface zoom on large screens)",
+    "composer inside the viewport with a small bottom margin (12-28 px, or the safe-area inset when larger)",
     "brand and top-right controls do not overlap",
     "touch targets at least 28x28 CSS px on coarse pointers",
     "privacy policy modal fits the viewport"
   ],
   "flowsPerViewport": [
     "home, slash-command menu, /faq animated explainer",
-    "send a note with an attachment: typing statuses, blurred one-time link",
+    "send a note with an attachment: the sent secret and the one-time link stay blurred until hovered or tapped; typing statuses",
     "settings drawer with the server card and the address form",
     "recipient: pinned-key check, Argon2id pre-solve, read and destroy, decrypted text and file download"
   ],

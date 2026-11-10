@@ -67,7 +67,6 @@
   "LINK_QR_HIDE": "Ocultar QR",
   "LINK_QR_FAILED": "Não foi possível gerar o código QR",
   "LINK_LOCAL_COPY": "Abrir com esta cópia local (somente neste dispositivo):",
-  "SENT_HIDDEN": "oculto · clique para mostrar",
   "GATE_TITLE": "Alguém enviou a você um segredo de uso único.",
   "GATE_WARN": "Ao abri-lo, ele é destruído imediatamente no servidor — só pode ser lido uma vez.",
   "GATE_REVEAL": "Ler e destruir",

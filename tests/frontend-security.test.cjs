@@ -415,30 +415,40 @@ test('sending prevents duplicate submits and discards a response after the API c
   assert.equal(element('noteInput').value, 'sensitive message', 'the unsent secret goes back into the composer');
 });
 
-test('a successful send shows the typing statuses, then a link reply and masks the secret', async () => {
+test('a successful send blurs the secret, shows the typing statuses, then a blurred link reply', async () => {
   const { api, element } = frontend();
   api.setApiPubKey(fixture.pubkey);
   api.prepareCreate();
   api.disableWarmup();
   const nid = Buffer.alloc(16, 1).toString('base64url');
   let statusDuringUpload = '';
-  api.mockFetchJson(async () => { statusDuringUpload = api.chatText(); return { response: { ok: true }, body: { ok: true, nid } }; });
+  let maskedDuringUpload = false;
+  api.mockFetchJson(async () => {
+    statusDuringUpload = api.chatText();
+    maskedDuringUpload = element('chatLog').children[0].querySelector('.bubble').classList.contains('masked');
+    return { response: { ok: true }, body: { ok: true, nid } };
+  });
   element('noteInput').value = 'top secret';
   await element('composer').handlers.submit({ preventDefault() {} });
   assert.match(statusDuringUpload, /not a robot/);
+  assert.ok(maskedDuringUpload, 'the sent secret is blurred as soon as it appears in the chat');
   const text = api.chatText();
   assert.match(text, /one-time link/);
   assert.match(text, new RegExp('https://notes\\.example/\\?p=' + nid + '&pin=' + fixture.pubkey + '#[A-Za-z0-9_-]{43}'));
   assert.equal(element('noteInput').value, '');
-  const outgoing = element('chatLog').children[0];
-  assert.ok(outgoing.classList.contains('secret-masked'), 'the sent secret is blurred once the link is issued');
+  const secret = element('chatLog').children[0].querySelector('.bubble');
+  assert.ok(secret.classList.contains('masked'), 'the sent secret stays blurred until hovered or tapped');
   assert.doesNotMatch(text, /expires in|opens once|id: /, 'no metadata clutter under the link');
+  assert.doesNotMatch(text, /click to show|hidden/i, 'no "hidden, click to show" hint');
   const box = element('chatLog').querySelector('.link-box');
   assert.ok(box.classList.contains('masked'), 'the link is blurred until hovered or tapped');
+  await secret.click();
   await box.click();
+  assert.ok(secret.classList.contains('revealed'), 'a tap shows the secret');
   assert.ok(box.classList.contains('revealed'), 'a tap shows the link');
   await new Promise(resolve => setTimeout(resolve, 3100));
-  assert.equal(box.classList.contains('revealed'), false, 'and it blurs again after 3 s');
+  assert.equal(secret.classList.contains('revealed'), false, 'the secret blurs again after 3 s');
+  assert.equal(box.classList.contains('revealed'), false, 'and so does the link');
 });
 
 test('a pasted share link opens the note instead of being encrypted as a new secret', async () => {

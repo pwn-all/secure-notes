@@ -176,7 +176,6 @@ const BUILTIN_I18N = {
     LINK_QR_HIDE: 'Hide QR',
     LINK_QR_FAILED: 'Could not draw the QR code',
     LINK_LOCAL_COPY: 'Open with this local copy (this device only):',
-    SENT_HIDDEN: 'hidden · click to show',
     GATE_TITLE: 'Someone sent you a one-time secret.',
     GATE_WARN: 'Opening it destroys it on the server immediately — it can be read only once.',
     GATE_REVEAL: 'Read and destroy',
@@ -1632,8 +1631,8 @@ function fileChip(name, size, onRemove) {
 function addUserMessage(text, files = []) {
   const msg = addMessage('user');
   if (text) {
-    const body = h('div', 'bubble-text', text);
-    msg.bubble.appendChild(body);
+    msg.bubble.appendChild(h('div', 'bubble-text', text));
+    maskSecret(msg.bubble);
   } else {
     msg.bubble.remove();
   }
@@ -1642,16 +1641,6 @@ function addUserMessage(text, files = []) {
     files.forEach(file => list.appendChild(fileChip(cleanFileName(file.name), file.size)));
     msg.col.appendChild(list);
   }
-  // After the link is issued the secret is blurred, so it is not left readable on screen.
-  msg.mask = () => {
-    if (!text) return;
-    msg.root.classList.add('secret-masked');
-    const hint = i18nEl('span', 'mask-hint', 'SENT_HIDDEN');
-    const toggle = () => msg.root.classList.toggle('secret-masked');
-    msg.bubble.addEventListener('click', toggle);
-    hint.addEventListener('click', toggle);
-    msg.col.appendChild(hint);
-  };
   return msg;
 }
 
@@ -1675,12 +1664,12 @@ function ttlLabelKey(ttl) {
   return ttl === 43200 ? 'TTL_SHORT_12' : 'TTL_SHORT_24';
 }
 
-// The link carries the key, so it stays blurred: hover shows it on a desktop, a click or tap
-// shows it for LINK_REVEAL_MS and then it blurs again. Copy and QR work without revealing it.
-function maskLink(el) {
+// The sent secret and the link (it carries the key) stay blurred: hover shows them on a desktop,
+// a click or tap shows them for LINK_REVEAL_MS and then they blur again. Copy and QR work without
+// revealing the link.
+function maskSecret(el) {
   el.classList.add('masked');
   el.tabIndex = 0;
-  el.title = t('SENT_HIDDEN');
   let timer = null;
   el.addEventListener('click', () => {
     el.classList.add('revealed');
@@ -1701,7 +1690,7 @@ function renderLinkReply(msg, { url, nid }) {
   text.appendChild(document.createTextNode(hashAt >= 0 ? url.slice(0, hashAt) : url));
   if (hashAt >= 0) text.appendChild(h('span', 'link-key', url.slice(hashAt)));
   box.appendChild(text);
-  msg.bubble.appendChild(maskLink(box));
+  msg.bubble.appendChild(maskSecret(box));
 
   const actions = h('div', 'link-actions');
   actions.appendChild(copyButton('LINK_COPY', () => url, 'btn btn-accent btn-sm'));
@@ -1733,7 +1722,7 @@ function renderLinkReply(msg, { url, nid }) {
     msg.bubble.appendChild(i18nEl('p', 'link-hint', 'LINK_LOCAL_COPY'));
     const localBox = h('div', 'link-box');
     localBox.appendChild(h('span', 'link-text', local));
-    msg.bubble.appendChild(maskLink(localBox));
+    msg.bubble.appendChild(maskSecret(localBox));
   }
   msg.root.classList.add('msg-link');
   scrollChatToEnd();
@@ -2315,7 +2304,6 @@ async function sendNote({ text, files }) {
         });
         await reply.typing.hold(MIN_LINK_STATUS_MS);
         renderLinkReply(reply, { url: buildHostedShareUrl(nid, keyB64), nid });
-        userMsg.mask();
         return;
       } catch (err) {
         const staleChallenge = ['invalid_challenge', 'challenge_expired'].includes(err?.code) || err?.expired;
