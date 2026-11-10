@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 axum = { version = "0.8.9", features = ["http2"] }
 axum-server = { version = "0.9", features = ["tls-rustls"] }
 base64 = "0.22.1"
@@ -30,6 +31,10 @@ tower-http = { version = "0.7.0", features = [
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 http-body-util = "0.1"

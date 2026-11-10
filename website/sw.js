@@ -1,5 +1,5 @@
-const CACHE = 'secnote-v4';
-const SHELL = ['/', '/app-config.js', '/app.js', '/styles.css', '/pow-worker.js', '/qrcode.min.js', '/logo.svg', '/manifest.json'];
+const CACHE = 'secnote-v5';
+const SHELL = ['/', '/app-config.js', '/app.js', '/styles.css', '/pow-worker.js', '/argon2.js', '/qrcode.min.js', '/logo.svg', '/manifest.json'];
 const STATIC_PATHS = new Set([...SHELL, '/index.html',
   ...['en', 'ru', 'ua', 'de', 'es', 'fr', 'pt', 'ar', 'bn', 'cn', 'hi', 'ur'].map(lang => '/langs/' + lang + '.json')]);
 

@@ -14,9 +14,12 @@ use hyper_util::{
     server::conn::auto::Builder as HttpBuilder,
 };
 use rand::RngExt;
-use secure_notes::{AppConfig, AppState, build_router, spawn_cleanup_task};
+use secure_notes::{
+    AppConfig, AppState, InstancePassport, build_router, hardening, spawn_cleanup_task,
+    validate_pow_env,
+};
 use tokio::signal;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Clone, Debug)]
 struct RedirectState {
@@ -35,7 +38,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
+    // Before any secret is loaded: no core dumps, no ptrace from peers, memory pinned when
+    // the memlock limit allows it. The outcome is published through the signed /info.
+    let passport = InstancePassport::collect(hardening::harden_process());
+    info!(
+        version = passport.version,
+        binary_sha256 = passport.binary_sha256.as_deref().unwrap_or("unavailable"),
+        dumpable = ?passport.ram_only.dumpable,
+        core_dump_limit_zero = ?passport.ram_only.core_dump_limit_zero,
+        memory_locked = ?passport.ram_only.memory_locked,
+        memory_lock_detail = passport.ram_only.memory_lock_detail.unwrap_or("-"),
+        swap_present = ?passport.ram_only.swap_present,
+        "Instance passport collected"
+    );
+
+    if let Err(message) = validate_pow_env() {
+        tracing::error!("{message}");
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, message).into());
+    }
     let config = AppConfig::from_env();
+    info!(
+        bits_create = config.pow_bits_create,
+        bits_create_max = config.pow_bits_create_max,
+        rounds_create = config.pow_rounds_create,
+        bits_view = config.pow_bits_view,
+        bits_view_max = config.pow_bits_view_max,
+        rounds_view = config.pow_rounds_view,
+        m_kib = config.pow_argon2_m_kib,
+        t = config.pow_argon2_t,
+        verify_concurrency = config.pow_verify_concurrency,
+        "Argon2id proof-of-work configured"
+    );
+    if config.max_file_bytes > 0 {
+        info!(
+            max_file_bytes = config.max_file_bytes,
+            max_blob_bytes = config.effective_max_blob_bytes(),
+            upload_timeout_secs = config.upload_timeout_secs,
+            "Encrypted file attachments enabled"
+        );
+    }
+    if config.max_note_storage_bytes < config.effective_max_blob_bytes() {
+        warn!(
+            max_note_storage_bytes = config.max_note_storage_bytes,
+            max_blob_bytes = config.effective_max_blob_bytes(),
+            "MAX_NOTE_STORAGE_BYTES is smaller than one maximum-size note; such notes will be refused"
+        );
+    }
     let http_bind_addr = env::var("HTTP_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:80".to_owned());
     let https_bind_addr = env::var("HTTPS_BIND_ADDR")
         .or_else(|_| env::var("BIND_ADDR"))
@@ -63,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spawn_tls_reload_task(tls_config.clone(), tls_cert_path, tls_key_path)?;
 
     let signing_key = load_or_generate_signing_key()?;
-    let state = AppState::with_signing_key(config, Some(signing_key));
+    let state = AppState::with_passport(config, Some(signing_key), passport);
     let _cleanup_handle = spawn_cleanup_task(state.clone());
 
     let app = build_router(state);

@@ -7,7 +7,7 @@ const http2 = require('node:http2');
 const net = require('node:net');
 const tls = require('node:tls');
 const { once } = require('node:events');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const { mkdtempSync, readFileSync, writeFileSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { resolve, join } = require('node:path');
@@ -35,16 +35,38 @@ function certificate(directory, suffix) {
   return { cert, key };
 }
 
-function solve(challenge, payloadHash) {
-  const challengeBytes = Buffer.from(challenge.challenge, 'base64url');
-  for (let counter = 0n; ; counter++) {
+// The frontend's Argon2id implementation, evaluated in this global context the way a
+// browser or worker loads it (a vm sandbox would be an order of magnitude slower).
+(0, eval)(readFileSync(resolve('website/argon2.js'), 'utf8'));
+const { argon2id } = globalThis.SecNoteArgon2;
+
+function hasLeadingZeroBits(digest, bits) {
+  const full = Math.floor(bits / 8), remainder = bits % 8;
+  return digest.subarray(0, full).every(byte => byte === 0) &&
+    (!remainder || (digest[full] & (255 << (8 - remainder))) === 0);
+}
+
+// Solves the Argon2id challenge /api/v1/init advertised (docs/pow-spec.md).
+function solve(pow, payloadHash) {
+  assert.equal(pow.alg, 'argon2id-leading-zero-bits');
+  const challengeBytes = Buffer.from(pow.challenge, 'base64url');
+  const salt = hash(Buffer.concat([Buffer.from('secnote-pow-argon2id-v1'), challengeBytes, payloadHash]));
+  const opts = { m: pow.params.m_kib, t: pow.params.t, p: pow.params.p, tagLength: pow.params.tag_bytes };
+  const solutions = [];
+  for (let counter = 0n; solutions.length < pow.rounds; counter++) {
     const nonce = Buffer.alloc(8);
     nonce.writeBigUInt64LE(counter);
-    const digest = hash(Buffer.concat([challengeBytes, nonce, payloadHash]));
-    const full = Math.floor(challenge.bits / 8), remainder = challenge.bits % 8;
-    if (digest.subarray(0, full).every(byte => byte === 0) &&
-        (!remainder || (digest[full] & (255 << (8 - remainder))) === 0)) return b64(nonce);
+    if (hasLeadingZeroBits(Buffer.from(argon2id(new Uint8Array(nonce), new Uint8Array(salt), opts)), pow.bits)) {
+      solutions.push(nonce);
+    }
   }
+  return b64(Buffer.concat(solutions));
+}
+
+function createPayloadHash(ttl, blob) {
+  const ttlBytes = Buffer.alloc(8);
+  ttlBytes.writeBigUInt64BE(BigInt(ttl));
+  return hash(Buffer.concat([ttlBytes, Buffer.from(blob)]));
 }
 
 async function main() {
@@ -57,12 +79,25 @@ async function main() {
     const fixture = require('./fixtures/signed-response.json');
     const binaryArg = process.argv.indexOf('--binary');
     const binary = resolve(binaryArg === -1 ? 'target/release/secure_notes' : process.argv[binaryArg + 1]);
+
+    // There is no fallback scheme: legacy settings stop the server instead of being clamped.
+    for (const [name, value, message] of [['POW_ALG', 'sha256', /POW_ALG=sha256 is not supported/],
+      ['POW_BITS_CREATE', '17', /POW_BITS_CREATE=17 exceeds 12/]]) {
+      const refused = spawnSync(binary, [], { cwd: resolve('.'), encoding: 'utf8', timeout: 20000,
+        env: { ...process.env, [name]: value, HTTP_BIND_ADDR: '127.0.0.1:0', HTTPS_BIND_ADDR: '127.0.0.1:0',
+          TLS_CERT_PATH: initial.cert, TLS_KEY_PATH: initial.key, RUST_LOG: 'secure_notes=info' } });
+      assert.notEqual(refused.status, 0, `${name}=${value} must stop the server`);
+      assert.match(refused.stdout + refused.stderr, message);
+    }
+    console.log('PASS: legacy SHA-256 proof-of-work settings are refused at startup');
+
     child = spawn(binary, [], { cwd: resolve('.'), env: { ...process.env,
       HTTP_BIND_ADDR: `127.0.0.1:${httpPort}`, HTTPS_BIND_ADDR: `127.0.0.1:${httpsPort}`,
       PUBLIC_HOST: 'localhost', TLS_CERT_PATH: initial.cert, TLS_KEY_PATH: initial.key,
-      SIGNING_KEY: fixture.seed, POW_BITS_CREATE: '8', POW_BITS_CREATE_MAX: '8',
-      POW_BITS_VIEW: '8', POW_BITS_VIEW_MAX: '8', RATE_INIT_PER_MIN: '500',
-      RATE_CREATE_PER_MIN: '500', RATE_VIEW_PER_MIN: '500',
+      SIGNING_KEY: fixture.seed, POW_BITS_CREATE: '1', POW_BITS_CREATE_MAX: '1',
+      POW_BITS_VIEW: '1', POW_BITS_VIEW_MAX: '1', POW_ARGON2_M_KIB: '256', POW_ARGON2_T: '1',
+      POW_ROUNDS_CREATE: '3', POW_ROUNDS_VIEW: '2', MAX_FILE_BYTES: '200000',
+      RATE_INIT_PER_MIN: '500', RATE_CREATE_PER_MIN: '500', RATE_VIEW_PER_MIN: '500',
       MAX_PLAINTEXT_BYTES: '32768', MAX_BLOB_BYTES: '49152',
       MAX_NOTES: '50000', MAX_NOTE_STORAGE_BYTES: '67108864',
       MAX_ACTIVE_CHALLENGES: '10000', MAX_TRACKING_ENTRIES: '100000',
@@ -114,6 +149,24 @@ async function main() {
     assert.ok(ready, 'server did not start: ' + logs);
     console.log('PASS: compiled server starts with real TLS and verifies response signatures');
 
+    const info = (await api('/info')).body;
+    assert.equal(info.max_file_bytes, 200000);
+    const passport = info.passport;
+    assert.ok(passport, 'signed /info carries the instance passport');
+    assert.match(passport.binary_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(passport.binary_sha256, createHash('sha256').update(readFileSync(binary)).digest('hex'),
+      'passport hash matches the binary under test');
+    assert.ok(Number.isInteger(passport.uptime_secs) && passport.uptime_secs >= 0);
+    assert.equal(passport.ram_only.zeroize_on_drop, true);
+    if (process.platform === 'linux') {
+      assert.equal(passport.ram_only.dumpable, false);
+      assert.equal(passport.ram_only.core_dump_limit_zero, true);
+      assert.equal(typeof passport.ram_only.memory_locked, 'boolean');
+      assert.equal(typeof passport.ram_only.swap_present, 'boolean');
+    }
+    assert.ok(logs.includes('Instance passport collected'), 'startup log reports hardening outcome');
+    console.log('PASS: instance passport is published, hashes the running binary and reports hardening');
+
     const home = await request('/');
     assert.equal(home.status, 200);
     for (const header of ['content-security-policy', 'strict-transport-security',
@@ -153,18 +206,40 @@ async function main() {
     const plaintext = 'я'.repeat(16384);
     const ciphertext = Buffer.from(await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, Buffer.from(plaintext)));
     const blob = b64(Buffer.concat([iv, ciphertext])), viewToken = b64(hash(keyBytes));
-    const ttl = 43200, ttlBytes = Buffer.alloc(8);
-    ttlBytes.writeBigUInt64BE(BigInt(ttl));
+    const ttl = 43200;
+
+    // A repeated single solution is not a proof of several rounds, and it burns the challenge.
+    const burned = (await api('/api/v1/init?scope=create')).body;
+    const burnedNonce = solve(burned.pow, createPayloadHash(ttl, blob));
+    const firstSolution = Buffer.from(burnedNonce, 'base64url').subarray(0, 8);
+    const repeated = await api('/api/v1/notes', 'POST', { alg: 'aes-256-gcm', ttl, blob, view_token: viewToken,
+      challenge: burned.pow.challenge, nonce: b64(Buffer.concat([firstSolution, firstSolution, firstSolution])) });
+    assert.equal(repeated.status, 400);
+    assert.equal(repeated.body.error.code, 'invalid_pow');
+    const reused = await api('/api/v1/notes', 'POST', { alg: 'aes-256-gcm', ttl, blob, view_token: viewToken,
+      challenge: burned.pow.challenge, nonce: burnedNonce });
+    assert.equal(reused.status, 400);
+    assert.equal(reused.body.error.code, 'invalid_challenge');
+
     const init = (await api('/api/v1/init?scope=create')).body;
-    const nonce = solve(init.pow, hash(Buffer.concat([ttlBytes, Buffer.from(blob)])));
+    assert.equal(init.pow.alg, 'argon2id-leading-zero-bits');
+    assert.deepEqual(init.pow.params, { m_kib: 256, t: 1, p: 1, tag_bytes: 32, nonce_bytes: 8 });
+    assert.equal(init.pow.rounds, 3);
+    assert.equal(init.limits.max_file_bytes, 200000);
+    assert.equal(init.limits.max_plaintext_bytes, 32768);
+    assert.ok(init.limits.max_blob_bytes > 200000 * 4 / 3);
+    const nonce = solve(init.pow, createPayloadHash(ttl, blob));
+    assert.equal(Buffer.from(nonce, 'base64url').length, 24);
     const created = await api('/api/v1/notes', 'POST', { alg: 'aes-256-gcm', ttl, blob,
       view_token: viewToken, challenge: init.pow.challenge, nonce });
-    assert.equal(created.status, 200);
+    assert.equal(created.status, 200, JSON.stringify(created.body));
     const nid = created.body.nid;
-    async function view(token) {
+    console.log('PASS: Argon2id proof-of-work solved with the frontend implementation; repeated solution rejected and burned');
+    async function view(token, noteId = nid) {
       const init = (await api('/api/v1/init?scope=view')).body;
-      return api(`/api/v1/notes/${nid}/view`, 'POST', { challenge: init.pow.challenge,
-        nonce: solve(init.pow, hash(Buffer.from('view:' + nid))), view_token: token });
+      assert.equal(init.pow.rounds, 2);
+      return api(`/api/v1/notes/${noteId}/view`, 'POST', { challenge: init.pow.challenge,
+        nonce: solve(init.pow, hash(Buffer.from('view:' + noteId))), view_token: token });
     }
     assert.equal((await view(b64(randomBytes(32)))).status, 410);
     assert.equal((await api('/info')).body.notes, 1);
@@ -200,6 +275,32 @@ async function main() {
     assert.equal((await view(viewToken)).status, 410);
     assert.equal((await api('/info')).body.notes, 0);
     console.log('PASS: decrypt maximum note, burn once, then return signed 410');
+
+    // A ~100 KB encrypted file envelope fits the MAX_FILE_BYTES budget and reads back intact.
+    const fileBytes = randomBytes(100000);
+    const header = Buffer.from(JSON.stringify({ v: 1, text: 2, files: [{ name: 'a.bin', type: 'application/octet-stream', size: fileBytes.length }] }));
+    const headerLength = Buffer.alloc(4);
+    headerLength.writeUInt32BE(header.length);
+    const envelope = Buffer.concat([Buffer.from([0x00, 0x53, 0x4e, 0x46, 0x01]), headerLength, header, Buffer.from('hi'), fileBytes]);
+    const fileIv = randomBytes(12);
+    const fileBlob = b64(Buffer.concat([fileIv, Buffer.from(await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv: fileIv }, key, envelope))]));
+    assert.ok(fileBlob.length > 49152);
+    const fileInit = (await api('/api/v1/init?scope=create')).body;
+    const fileNote = await api('/api/v1/notes', 'POST', { alg: 'aes-256-gcm', ttl, blob: fileBlob,
+      view_token: viewToken, challenge: fileInit.pow.challenge, nonce: solve(fileInit.pow, createPayloadHash(ttl, fileBlob)) });
+    assert.equal(fileNote.status, 200, JSON.stringify(fileNote.body));
+    const fileRead = await view(viewToken, fileNote.body.nid);
+    assert.equal(fileRead.status, 200);
+    const fileEncrypted = Buffer.from(fileRead.body.blob, 'base64url');
+    const fileRecovered = Buffer.from(await webcrypto.subtle.decrypt({ name: 'AES-GCM', iv: fileEncrypted.subarray(0, 12) }, key, fileEncrypted.subarray(12)));
+    assert.ok(fileRecovered.equals(envelope));
+    const tooLarge = b64(randomBytes(12 + 16 + 32768 + 16384 + 200000 + 1));
+    const tooLargeInit = (await api('/api/v1/init?scope=create')).body;
+    const rejected = await api('/api/v1/notes', 'POST', { alg: 'aes-256-gcm', ttl, blob: tooLarge,
+      view_token: viewToken, challenge: tooLargeInit.pow.challenge, nonce: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
+    assert.equal(rejected.status, 413);
+    assert.equal(rejected.body.error.code, 'blob_too_large');
+    console.log('PASS: encrypted file envelope within MAX_FILE_BYTES round-trips; larger blob is refused');
 
     const partial = tls.connect({ host: '127.0.0.1', port: httpsPort, ca });
     await once(partial, 'secureConnect');

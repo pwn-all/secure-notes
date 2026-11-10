@@ -7,6 +7,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub mod hardening;
+
+use argon2::{Algorithm, Argon2, Params, Version};
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
@@ -28,6 +31,9 @@ use tokio::{
 };
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
+use zeroize::Zeroize;
+
+pub use hardening::{InstancePassport, RamOnlyReport};
 
 const NOTE_TTLS: [u64; 2] = [12 * 3600, 24 * 3600];
 const NOTE_ALG: &str = "aes-256-gcm";
@@ -36,11 +42,40 @@ const NOTE_NONCE_BYTES: usize = 12;
 const NOTE_TAG_BYTES: usize = 16;
 const CHALLENGE_BYTES: usize = 24;
 const POW_NONCE_BYTES: usize = 8;
-const MAX_POW_BITS: u8 = 28;
+/// Memory-hard proof-of-work: one Argon2id evaluation per attempt (docs/pow-spec.md).
+const POW_ALG_ARGON2ID: &str = "argon2id-leading-zero-bits";
+/// Domain separator mixed into the Argon2id salt so tags are bound to this protocol.
+const POW_ARGON2_SALT_DOMAIN: &[u8] = b"secnote-pow-argon2id-v1";
+const MAX_POW_BITS: u8 = 12;
+const MAX_POW_ROUNDS: u8 = 16;
+const POW_ARGON2_TAG_BYTES: usize = 32;
+const POW_ARGON2_M_KIB_MIN: u32 = 256;
+const POW_ARGON2_M_KIB_MAX: u32 = 65_536;
+const POW_ARGON2_T_MAX: u32 = 8;
+const POW_VERIFY_CONCURRENCY_MAX: usize = 64;
+/// Environment variables that carry a difficulty in leading zero bits.
+const POW_BITS_ENV_VARS: [&str; 6] = [
+    "POW_BITS_CREATE",
+    "POW_BITS",
+    "POW_BITS_CREATE_MAX",
+    "POW_BITS_MAX",
+    "POW_BITS_VIEW",
+    "POW_BITS_VIEW_MAX",
+];
+/// Budget for the client-side file envelope: magic (5) + header length (4) + JSON header.
+/// The server never parses the envelope (it is inside the AES-GCM ciphertext); it only
+/// reserves this many plaintext bytes for it when file uploads are enabled.
+pub const FILE_ENVELOPE_OVERHEAD_BYTES: usize = 16 * 1024;
+/// Upper bound for `MAX_FILE_BYTES`.
+pub const MAX_FILE_BYTES_LIMIT: usize = 64 * 1024 * 1024;
+const BASE_REQUEST_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_UPLOAD_TIMEOUT_SECS: u64 = 120;
+const UPLOAD_TIMEOUT_SECS_MAX: u64 = 600;
 const GENERATED_NID_BYTES: usize = 16;
 const GENERATED_NID_B64_LEN: usize = 22;
 const JSON_BODY_OVERHEAD_BYTES: usize = 2048;
-const SIG_BODY_LIMIT: usize = 512 * 1024;
+/// Minimum response size buffered for signing; grows with the effective blob limit.
+const SIG_BODY_LIMIT_MIN: usize = 512 * 1024;
 const MAX_SUPPORTED_BLOB_BYTES: usize = 48 * 1024;
 const REQUEST_ID_HEADER: &str = "x-secnote-request-id";
 const SIGNATURE_V2_HEADER: &str = "x-secnote-sig-v2";
@@ -63,8 +98,27 @@ pub struct AppConfig {
     pub pow_bits_create_max: u8,
     pub pow_bits_view: u8,
     pub pow_bits_view_max: u8,
+    /// Distinct Argon2id solutions required per create request.
+    pub pow_rounds_create: u8,
+    /// Distinct Argon2id solutions required per read request.
+    pub pow_rounds_view: u8,
+    /// Argon2id memory cost in KiB per evaluation.
+    pub pow_argon2_m_kib: u32,
+    /// Argon2id passes per evaluation.
+    pub pow_argon2_t: u32,
+    /// Maximum Argon2id verifications running at once (bounds CPU and RAM: this × m_kib).
+    pub pow_verify_concurrency: usize,
+    /// Include the signed instance passport (binary hash, hardening flags, uptime) in `/info`.
+    pub publish_passport: bool,
+    /// Maximum UTF-8 text bytes per note.
     pub max_plaintext_bytes: usize,
+    /// Maximum encoded blob for text-only notes (`MAX_BLOB_BYTES`); see
+    /// [`AppConfig::effective_max_blob_bytes`] for the limit that is enforced.
     pub max_blob_bytes: usize,
+    /// Maximum total size of attached files per note; 0 disables file uploads.
+    pub max_file_bytes: usize,
+    /// Body read and handler deadline for API requests while file uploads are enabled.
+    pub upload_timeout_secs: u64,
     pub max_active_challenges: usize,
     pub max_notes: usize,
     pub max_note_storage_bytes: usize,
@@ -80,21 +134,27 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> Self {
+        // Difficulty counts Argon2id evaluations (a 4 MiB evaluation takes ~15 ms in a desktop
+        // browser, ~60 ms on a phone-class CPU), so the defaults are a few bits; see
+        // docs/pow-spec.md for the calibration.
         let pow_bits_create = env::var("POW_BITS_CREATE")
             .ok()
             .or_else(|| env::var("POW_BITS").ok())
             .and_then(|v| v.parse::<u8>().ok())
-            .unwrap_or(17)
+            .unwrap_or(4)
             .clamp(1, MAX_POW_BITS);
         let pow_bits_create_max = env::var("POW_BITS_CREATE_MAX")
             .ok()
             .or_else(|| env::var("POW_BITS_MAX").ok())
             .and_then(|v| v.parse::<u8>().ok())
-            .unwrap_or(MAX_POW_BITS)
+            .unwrap_or(7)
             .clamp(pow_bits_create, MAX_POW_BITS);
-        let pow_bits_view = parse_env_u8("POW_BITS_VIEW", 16).clamp(1, MAX_POW_BITS);
+        let pow_bits_view = parse_env_u8("POW_BITS_VIEW", 3).clamp(1, MAX_POW_BITS);
         let pow_bits_view_max =
-            parse_env_u8("POW_BITS_VIEW_MAX", 24).clamp(pow_bits_view, MAX_POW_BITS);
+            parse_env_u8("POW_BITS_VIEW_MAX", 5).clamp(pow_bits_view, MAX_POW_BITS);
+        let default_verify_concurrency = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
 
         Self {
             server_salt: random_bytes(32),
@@ -103,11 +163,25 @@ impl AppConfig {
             pow_bits_create_max,
             pow_bits_view,
             pow_bits_view_max,
+            pow_rounds_create: parse_env_u8("POW_ROUNDS_CREATE", 4).clamp(1, MAX_POW_ROUNDS),
+            pow_rounds_view: parse_env_u8("POW_ROUNDS_VIEW", 2).clamp(1, MAX_POW_ROUNDS),
+            pow_argon2_m_kib: parse_env_u32("POW_ARGON2_M_KIB", 4096)
+                .clamp(POW_ARGON2_M_KIB_MIN, POW_ARGON2_M_KIB_MAX),
+            pow_argon2_t: parse_env_u32("POW_ARGON2_T", 1).clamp(1, POW_ARGON2_T_MAX),
+            pow_verify_concurrency: parse_env_usize(
+                "POW_VERIFY_CONCURRENCY",
+                default_verify_concurrency,
+            )
+            .clamp(1, POW_VERIFY_CONCURRENCY_MAX),
+            publish_passport: parse_env_bool("PUBLISH_PASSPORT", true),
             max_plaintext_bytes: parse_env_usize("MAX_PLAINTEXT_BYTES", 32768).clamp(1, 32768),
             max_blob_bytes: parse_env_usize("MAX_BLOB_BYTES", MAX_SUPPORTED_BLOB_BYTES).clamp(
                 ((NOTE_NONCE_BYTES + NOTE_TAG_BYTES + 1) * 4).div_ceil(3),
                 MAX_SUPPORTED_BLOB_BYTES,
             ),
+            max_file_bytes: parse_env_usize("MAX_FILE_BYTES", 0).min(MAX_FILE_BYTES_LIMIT),
+            upload_timeout_secs: parse_env_u64("UPLOAD_TIMEOUT_SECS", DEFAULT_UPLOAD_TIMEOUT_SECS)
+                .clamp(BASE_REQUEST_TIMEOUT_SECS, UPLOAD_TIMEOUT_SECS_MAX),
             max_active_challenges: parse_env_usize(
                 "MAX_ACTIVE_CHALLENGES",
                 DEFAULT_MAX_ACTIVE_CHALLENGES,
@@ -132,6 +206,88 @@ impl AppConfig {
             },
         }
     }
+
+    /// Largest plaintext (inside the AES-GCM blob) a note may carry. With file uploads enabled
+    /// this covers the text limit, the client-side file envelope and the file budget.
+    pub fn effective_max_plaintext_bytes(&self) -> usize {
+        if self.max_file_bytes == 0 {
+            self.max_plaintext_bytes
+        } else {
+            self.max_plaintext_bytes
+                .saturating_add(FILE_ENVELOPE_OVERHEAD_BYTES)
+                .saturating_add(self.max_file_bytes)
+        }
+    }
+
+    /// Largest base64url blob accepted and advertised as `limits.max_blob_bytes`.
+    pub fn effective_max_blob_bytes(&self) -> usize {
+        if self.max_file_bytes == 0 {
+            self.max_blob_bytes
+        } else {
+            b64url_no_pad_len(
+                NOTE_NONCE_BYTES + NOTE_TAG_BYTES + self.effective_max_plaintext_bytes(),
+            )
+            .max(self.max_blob_bytes)
+        }
+    }
+
+    /// Request body limit for API calls: the largest blob plus JSON framing.
+    fn max_request_body_bytes(&self) -> usize {
+        self.effective_max_blob_bytes()
+            .saturating_add(JSON_BODY_OVERHEAD_BYTES)
+            .max(JSON_BODY_OVERHEAD_BYTES)
+    }
+
+    /// Largest response buffered for signing (a read returns the whole blob).
+    fn signed_response_limit(&self) -> usize {
+        self.max_request_body_bytes().max(SIG_BODY_LIMIT_MIN)
+    }
+
+    /// Deadline for reading a request body and for running the handler.
+    fn request_timeout(&self) -> Duration {
+        if self.max_file_bytes == 0 {
+            Duration::from_secs(BASE_REQUEST_TIMEOUT_SECS)
+        } else {
+            Duration::from_secs(self.upload_timeout_secs.max(BASE_REQUEST_TIMEOUT_SECS))
+        }
+    }
+}
+
+/// Rejects proof-of-work settings this build cannot honour instead of silently clamping them:
+/// the SHA-256 scheme is gone (no fallback), and SHA-256 sized difficulties such as 17 bits
+/// would mean 2^17 Argon2id evaluations, i.e. hours per note in a browser.
+pub fn validate_pow_env() -> Result<(), String> {
+    check_pow_env(|name| env::var(name).ok())
+}
+
+fn check_pow_env(get: impl Fn(&str) -> Option<String>) -> Result<(), String> {
+    if let Some(alg) = get("POW_ALG") {
+        let alg = alg.trim();
+        if !alg.is_empty() && !alg.eq_ignore_ascii_case("argon2id") {
+            return Err(format!(
+                "POW_ALG={alg} is not supported: only argon2id proof-of-work exists \
+                 (the SHA-256 scheme was removed); unset POW_ALG or set it to argon2id. \
+                 See docs/pow-spec.md"
+            ));
+        }
+    }
+    for name in POW_BITS_ENV_VARS {
+        let Some(raw) = get(name) else { continue };
+        if let Ok(bits) = raw.trim().parse::<u64>()
+            && bits > u64::from(MAX_POW_BITS)
+        {
+            return Err(format!(
+                "{name}={bits} exceeds {MAX_POW_BITS}: difficulty now counts Argon2id \
+                 evaluations, not SHA-256 hashes (defaults: create 4..7, view 3..5). \
+                 See docs/pow-spec.md"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn b64url_no_pad_len(raw_bytes: usize) -> usize {
+    raw_bytes.saturating_mul(4).div_ceil(3)
 }
 
 fn parse_env_u8(name: &str, default: u8) -> u8 {
@@ -162,6 +318,17 @@ fn parse_env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn parse_env_bool(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        },
+        Err(_) => default,
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<StateInner>,
@@ -170,11 +337,28 @@ pub struct AppState {
 struct StateInner {
     config: AppConfig,
     signing_key: Option<SigningKey>,
+    passport: InstancePassport,
     challenges: Mutex<HashMap<String, ChallengeEntry>>,
     notes: Mutex<NoteStore>,
     api_permits: Semaphore,
+    pow_verify_permits: Semaphore,
     abuse: Mutex<HashMap<String, AbuseEntry>>,
     rate_windows: Mutex<HashMap<String, RateEntry>>,
+}
+
+/// Everything a client needs to solve, and the server needs to verify, one challenge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PowSpec {
+    bits: u8,
+    rounds: u8,
+    m_kib: u32,
+    t_cost: u32,
+}
+
+impl PowSpec {
+    fn nonce_bytes(&self) -> usize {
+        POW_NONCE_BYTES * usize::from(self.rounds)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -188,15 +372,40 @@ struct ChallengeEntry {
     client_key: String,
     scope: PowScope,
     challenge_bytes: Vec<u8>,
-    bits: u8,
+    spec: PowSpec,
     expires_at: u64,
 }
 
+/// Stored ciphertext. Overwritten with zeros when it leaves the store (read, expiry,
+/// eviction) so freed heap pages do not keep note contents around. Defense in depth only:
+/// transient copies in request/response buffers are not covered (docs/ram-only.md).
 #[derive(Clone)]
 struct NoteEntry {
     blob: String,
     view_token_hash: [u8; 32],
     expires_at: u64,
+}
+
+impl Drop for NoteEntry {
+    fn drop(&mut self) {
+        self.blob.zeroize();
+        self.view_token_hash.zeroize();
+    }
+}
+
+/// Response field that zeroizes its String after serialization.
+struct SecretString(String);
+
+impl Serialize for SecretString {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl Drop for SecretString {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 #[derive(Default)]
@@ -243,11 +452,21 @@ impl AppState {
     }
 
     pub fn with_signing_key(config: AppConfig, signing_key: Option<SigningKey>) -> Self {
+        Self::with_passport(config, signing_key, InstancePassport::unknown())
+    }
+
+    pub fn with_passport(
+        config: AppConfig,
+        signing_key: Option<SigningKey>,
+        passport: InstancePassport,
+    ) -> Self {
         Self {
             inner: Arc::new(StateInner {
                 api_permits: Semaphore::new(config.max_concurrent_api_requests),
+                pow_verify_permits: Semaphore::new(config.pow_verify_concurrency.max(1)),
                 config,
                 signing_key,
+                passport,
                 challenges: Mutex::new(HashMap::new()),
                 notes: Mutex::new(NoteStore::default()),
                 abuse: Mutex::new(HashMap::new()),
@@ -257,6 +476,11 @@ impl AppState {
     }
 
     fn config(&self) -> &AppConfig {
+        &self.inner.config
+    }
+
+    /// The configuration this state was built with.
+    pub fn app_config(&self) -> &AppConfig {
         &self.inner.config
     }
 
@@ -403,14 +627,49 @@ struct PowResponse {
     scope: &'static str,
     alg: &'static str,
     bits: u8,
+    rounds: u8,
+    params: PowArgon2Params,
     expires_at: u64,
     challenge: String,
 }
 
+#[derive(Serialize, Clone, Copy)]
+struct PowArgon2Params {
+    m_kib: u32,
+    t: u32,
+    p: u32,
+    tag_bytes: usize,
+    nonce_bytes: usize,
+}
+
+impl PowResponse {
+    fn new(scope: PowScope, spec: PowSpec, expires_at: u64, challenge: String) -> Self {
+        Self {
+            scope: scope.as_str(),
+            alg: POW_ALG_ARGON2ID,
+            bits: spec.bits,
+            rounds: spec.rounds,
+            params: PowArgon2Params {
+                m_kib: spec.m_kib,
+                t: spec.t_cost,
+                p: 1,
+                tag_bytes: POW_ARGON2_TAG_BYTES,
+                nonce_bytes: POW_NONCE_BYTES,
+            },
+            expires_at,
+            challenge,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct LimitsResponse {
+    /// UTF-8 text limit per note.
     max_plaintext_bytes: usize,
+    /// Effective encoded blob limit (grows with `max_file_bytes`).
     max_blob_bytes: usize,
+    /// Total attached file bytes per note; 0 means uploads are disabled.
+    max_file_bytes: usize,
     ttls: [u64; 2],
 }
 
@@ -458,7 +717,7 @@ struct ViewNoteRequest {
 #[derive(Serialize)]
 struct ViewNoteResponse {
     ok: bool,
-    blob: String,
+    blob: SecretString,
     deleted: bool,
 }
 
@@ -469,6 +728,34 @@ struct InfoResponse {
     ram_usage: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pubkey: Option<String>,
+    /// Total attached file bytes per note; 0 means uploads are disabled.
+    max_file_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    passport: Option<PassportResponse>,
+}
+
+/// The instance passport as published through the signed `/info` response. Self-reported by
+/// this process; see docs/ram-only.md for what it does and does not prove.
+#[derive(Serialize)]
+struct PassportResponse {
+    version: &'static str,
+    started_at: u64,
+    uptime_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_sha256: Option<String>,
+    ram_only: RamOnlyReport,
+}
+
+impl PassportResponse {
+    fn from_passport(passport: &InstancePassport) -> Self {
+        Self {
+            version: passport.version,
+            started_at: passport.started_at,
+            uptime_secs: passport.uptime_secs(),
+            binary_sha256: passport.binary_sha256.clone(),
+            ram_only: passport.ram_only.clone(),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -549,33 +836,30 @@ async fn sign_response_middleware(
         .unwrap_or("/")
         .to_owned();
     let (parts, body) = req.into_parts();
-    let body_limit = state
-        .config()
-        .max_blob_bytes
-        .saturating_add(JSON_BODY_OVERHEAD_BYTES);
-    let request_bytes =
-        match tokio::time::timeout(Duration::from_secs(10), to_bytes(body, body_limit)).await {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(_)) => {
-                return ApiError::new(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "body_too_large",
-                    "request body is too large or unreadable",
-                )
-                .into_response();
-            }
-            Err(_) => {
-                return ApiError::new(
-                    StatusCode::REQUEST_TIMEOUT,
-                    "request_timeout",
-                    "request timed out",
-                )
-                .into_response();
-            }
-        };
+    let body_limit = state.config().max_request_body_bytes();
+    let deadline = state.config().request_timeout();
+    let request_bytes = match tokio::time::timeout(deadline, to_bytes(body, body_limit)).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(_)) => {
+            return ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "body_too_large",
+                "request body is too large or unreadable",
+            )
+            .into_response();
+        }
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::REQUEST_TIMEOUT,
+                "request_timeout",
+                "request timed out",
+            )
+            .into_response();
+        }
+    };
     let request_hash = URL_SAFE_NO_PAD.encode(sha256_bytes(&request_bytes));
     let request = Request::from_parts(parts, Body::from(request_bytes));
-    let response = match tokio::time::timeout(Duration::from_secs(10), next.run(request)).await {
+    let response = match tokio::time::timeout(deadline, next.run(request)).await {
         Ok(response) => response,
         Err(_) => ApiError::new(
             StatusCode::REQUEST_TIMEOUT,
@@ -590,7 +874,8 @@ async fn sign_response_middleware(
     };
 
     let (parts, body) = response.into_parts();
-    let (mut parts, bytes) = match to_bytes(body, SIG_BODY_LIMIT).await {
+    let response_limit = state.config().signed_response_limit();
+    let (mut parts, bytes) = match to_bytes(body, response_limit).await {
         Ok(bytes) => (parts, bytes),
         Err(_) => {
             let error = ApiError::new(
@@ -602,7 +887,7 @@ async fn sign_response_middleware(
             let (parts, body) = error.into_parts();
             (
                 parts,
-                to_bytes(body, SIG_BODY_LIMIT)
+                to_bytes(body, response_limit)
                     .await
                     .expect("fixed error body fits signing limit"),
             )
@@ -652,11 +937,7 @@ fn response_signature_message(
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let max_body_bytes = state
-        .config()
-        .max_blob_bytes
-        .saturating_add(JSON_BODY_OVERHEAD_BYTES)
-        .max(JSON_BODY_OVERHEAD_BYTES);
+    let max_body_bytes = state.config().max_request_body_bytes();
 
     Router::new()
         .route("/info", get(info_handler))
@@ -709,6 +990,11 @@ async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
         notes: snapshot.notes,
         ram_usage: format!("{mb} mb"),
         pubkey: state.pubkey_b64(),
+        max_file_bytes: state.config().max_file_bytes,
+        passport: state
+            .config()
+            .publish_passport
+            .then(|| PassportResponse::from_passport(&state.inner.passport)),
     })
 }
 
@@ -725,17 +1011,19 @@ async fn init_handler(
     ensure_not_banned(&state, &client_key, now).await?;
     enforce_rate_limit(&state, &client_key, Endpoint::Init, now).await?;
 
-    let (base_bits, bits_max) = match scope {
+    let (base_bits, bits_max, rounds) = match scope {
         PowScope::Create => (
             state.config().pow_bits_create,
             state.config().pow_bits_create_max,
+            state.config().pow_rounds_create,
         ),
         PowScope::View => (
             state.config().pow_bits_view,
             state.config().pow_bits_view_max,
+            state.config().pow_rounds_view,
         ),
     };
-    let (challenge, bits, expires_at) = {
+    let (challenge, spec, expires_at) = {
         let mut challenges = state.inner.challenges.lock().await;
         if challenges.len() >= state.config().max_active_challenges {
             challenges.retain(|_, c| c.expires_at > now);
@@ -762,6 +1050,12 @@ async fn init_handler(
             bits = bits.saturating_add(1);
         }
         bits = bits.min(bits_max);
+        let spec = PowSpec {
+            bits,
+            rounds,
+            m_kib: state.config().pow_argon2_m_kib,
+            t_cost: state.config().pow_argon2_t,
+        };
 
         let challenge_bytes = random_bytes(CHALLENGE_BYTES);
         let challenge = URL_SAFE_NO_PAD.encode(&challenge_bytes);
@@ -773,24 +1067,18 @@ async fn init_handler(
                 client_key: client_key.clone(),
                 scope,
                 challenge_bytes,
-                bits,
+                spec,
                 expires_at,
             },
         );
 
-        (challenge, bits, expires_at)
+        (challenge, spec, expires_at)
     };
 
     Ok(Json(InitResponse {
         ok: true,
         server_time: now,
-        pow: PowResponse {
-            scope: scope.as_str(),
-            alg: "sha256-leading-zero-bits",
-            bits,
-            expires_at,
-            challenge,
-        },
+        pow: PowResponse::new(scope, spec, expires_at, challenge),
         encryption: EncryptionResponse {
             alg: NOTE_ALG,
             key_bytes: NOTE_KEY_BYTES,
@@ -799,7 +1087,8 @@ async fn init_handler(
         },
         limits: LimitsResponse {
             max_plaintext_bytes: state.config().max_plaintext_bytes,
-            max_blob_bytes: state.config().max_blob_bytes,
+            max_blob_bytes: state.config().effective_max_blob_bytes(),
+            max_file_bytes: state.config().max_file_bytes,
             ttls: NOTE_TTLS,
         },
     }))
@@ -839,7 +1128,7 @@ async fn create_note_handler(
         ));
     }
 
-    if payload.blob.len() > state.config().max_blob_bytes {
+    if payload.blob.len() > state.config().effective_max_blob_bytes() {
         return Err(ApiError::new(
             StatusCode::PAYLOAD_TOO_LARGE,
             "blob_too_large",
@@ -849,7 +1138,7 @@ async fn create_note_handler(
 
     let blob_size = validate_aes_blob_format(&payload.blob)?;
     let plaintext_size = blob_size.saturating_sub(NOTE_NONCE_BYTES + NOTE_TAG_BYTES);
-    if plaintext_size > state.config().max_plaintext_bytes {
+    if plaintext_size > state.config().effective_max_plaintext_bytes() {
         return Err(ApiError::new(
             StatusCode::PAYLOAD_TOO_LARGE,
             "plaintext_too_large",
@@ -864,75 +1153,23 @@ async fn create_note_handler(
     )?;
     let view_token_hash = sha256_bytes(&view_token_bytes);
 
-    let challenge_entry = {
-        let challenges = state.inner.challenges.lock().await;
-        challenges.get(&payload.challenge).cloned()
-    }
-    .ok_or_else(|| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_challenge",
-            "challenge is missing or already used",
-        )
-    })?;
-
-    if challenge_entry.client_key != client_key {
-        register_pow_failure(&state, &client_key, now).await;
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "challenge_client_mismatch",
-            "challenge does not belong to this ip",
-        ));
-    }
-
-    if challenge_entry.expires_at <= now {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "challenge_expired",
-            "challenge has expired",
-        ));
-    }
-
-    if challenge_entry.scope != PowScope::Create {
-        register_pow_failure(&state, &client_key, now).await;
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "challenge_scope_mismatch",
-            "challenge scope is invalid for this endpoint",
-        ));
-    }
-
-    let nonce_bytes = decode_b64url_exact(
+    let (challenge_entry, nonce_bytes) = take_challenge(
+        &state,
+        &payload.challenge,
+        &client_key,
+        PowScope::Create,
         &payload.nonce,
-        POW_NONCE_BYTES,
-        "invalid_nonce",
-        "nonce must be 8 bytes base64url",
-    )?;
+        now,
+    )
+    .await?;
+    let payload_hash = payload_hash_for_create(payload.ttl, &payload.blob);
 
-    if !verify_pow_for_create(
-        &challenge_entry.challenge_bytes,
-        &nonce_bytes,
-        payload.ttl,
-        &payload.blob,
-        challenge_entry.bits,
-    ) {
+    if !verify_pow(&state, &challenge_entry, nonce_bytes, payload_hash).await? {
         register_pow_failure(&state, &client_key, now).await;
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "invalid_pow",
             "pow solution is invalid",
-        ));
-    }
-
-    let consumed = {
-        let mut challenges = state.inner.challenges.lock().await;
-        challenges.remove(&payload.challenge)
-    };
-    if consumed.is_none() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_challenge",
-            "challenge is missing or already used",
         ));
     }
 
@@ -1005,74 +1242,23 @@ async fn view_note_handler(
     ensure_not_banned(&state, &client_key, now).await?;
     enforce_rate_limit(&state, &client_key, Endpoint::View, now).await?;
 
-    let challenge_entry = {
-        let challenges = state.inner.challenges.lock().await;
-        challenges.get(&payload.challenge).cloned()
-    }
-    .ok_or_else(|| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_challenge",
-            "challenge is missing or already used",
-        )
-    })?;
-
-    if challenge_entry.client_key != client_key {
-        register_pow_failure(&state, &client_key, now).await;
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "challenge_client_mismatch",
-            "challenge does not belong to this ip",
-        ));
-    }
-
-    if challenge_entry.expires_at <= now {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "challenge_expired",
-            "challenge has expired",
-        ));
-    }
-
-    if challenge_entry.scope != PowScope::View {
-        register_pow_failure(&state, &client_key, now).await;
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "challenge_scope_mismatch",
-            "challenge scope is invalid for this endpoint",
-        ));
-    }
-
-    let nonce_bytes = decode_b64url_exact(
+    let (challenge_entry, nonce_bytes) = take_challenge(
+        &state,
+        &payload.challenge,
+        &client_key,
+        PowScope::View,
         &payload.nonce,
-        POW_NONCE_BYTES,
-        "invalid_nonce",
-        "nonce must be 8 bytes base64url",
-    )?;
+        now,
+    )
+    .await?;
+    let payload_hash = payload_hash_for_view(&nid);
 
-    if !verify_pow_for_view(
-        &challenge_entry.challenge_bytes,
-        &nonce_bytes,
-        &nid,
-        challenge_entry.bits,
-    ) {
+    if !verify_pow(&state, &challenge_entry, nonce_bytes, payload_hash).await? {
         register_pow_failure(&state, &client_key, now).await;
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "invalid_pow",
             "pow solution is invalid",
-        ));
-    }
-
-    let consumed = {
-        let mut challenges = state.inner.challenges.lock().await;
-        challenges.remove(&payload.challenge)
-    };
-    if consumed.is_none() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_challenge",
-            "challenge is missing or already used",
         ));
     }
 
@@ -1084,7 +1270,7 @@ async fn view_note_handler(
     )?;
     let provided_view_token_hash = sha256_bytes(&view_token_bytes);
 
-    let note = {
+    let mut note = {
         let mut notes = state.inner.notes.lock().await;
         let Some(existing) = notes.entries.get(&nid) else {
             return Err(ApiError::new(StatusCode::GONE, "gone", "note is gone"));
@@ -1103,9 +1289,14 @@ async fn view_note_handler(
 
     reset_pow_failures(&state, &client_key, now).await;
 
+    // Move the ciphertext out so the store's copy (and its token hash) is zeroized right here;
+    // the response copy is zeroized after serialization by SecretString.
+    let blob = std::mem::take(&mut note.blob);
+    drop(note);
+
     Ok(Json(ViewNoteResponse {
         ok: true,
-        blob: note.blob,
+        blob: SecretString(blob),
         deleted: true,
     }))
 }
@@ -1366,28 +1557,192 @@ fn payload_hash_for_view(nid: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn verify_pow_for_create(challenge: &[u8], nonce: &[u8], ttl: u64, blob: &str, bits: u8) -> bool {
-    let payload_hash = payload_hash_for_create(ttl, blob);
-    verify_pow_with_payload_hash(challenge, nonce, &payload_hash, bits)
+/// Decodes the proof nonce: `rounds` × 8 bytes, base64url without padding.
+fn decode_pow_nonce(value: &str, spec: &PowSpec) -> Result<Vec<u8>, ApiError> {
+    decode_b64url_exact(
+        value,
+        spec.nonce_bytes(),
+        "invalid_nonce",
+        "nonce must be 8 bytes per round, base64url",
+    )
 }
 
-fn verify_pow_for_view(challenge: &[u8], nonce: &[u8], nid: &str, bits: u8) -> bool {
-    let payload_hash = payload_hash_for_view(nid);
-    verify_pow_with_payload_hash(challenge, nonce, &payload_hash, bits)
+/// Checks a challenge against this client and endpoint and removes it from the map before
+/// any proof is verified, so one challenge can trigger at most one Argon2id verification.
+/// A rejected proof therefore burns the challenge; the client fetches a new one.
+async fn take_challenge(
+    state: &AppState,
+    challenge: &str,
+    client_key: &str,
+    scope: PowScope,
+    nonce: &str,
+    now: u64,
+) -> Result<(ChallengeEntry, Vec<u8>), ApiError> {
+    // (error, counts as a PoW failure)
+    let outcome: Result<(ChallengeEntry, Vec<u8>), (ApiError, bool)> = {
+        let mut challenges = state.inner.challenges.lock().await;
+        let checked = match challenges.get(challenge) {
+            None => Err((
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_challenge",
+                    "challenge is missing or already used",
+                ),
+                false,
+            )),
+            Some(entry) if entry.client_key != client_key => Err((
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "challenge_client_mismatch",
+                    "challenge does not belong to this ip",
+                ),
+                true,
+            )),
+            Some(entry) if entry.expires_at <= now => Err((
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "challenge_expired",
+                    "challenge has expired",
+                ),
+                false,
+            )),
+            Some(entry) if entry.scope != scope => Err((
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "challenge_scope_mismatch",
+                    "challenge scope is invalid for this endpoint",
+                ),
+                true,
+            )),
+            Some(entry) => decode_pow_nonce(nonce, &entry.spec).map_err(|err| (err, false)),
+        };
+        match checked {
+            Ok(nonce_bytes) => match challenges.remove(challenge) {
+                Some(entry) => Ok((entry, nonce_bytes)),
+                None => Err((
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_challenge",
+                        "challenge is missing or already used",
+                    ),
+                    false,
+                )),
+            },
+            Err(failure) => Err(failure),
+        }
+    };
+    match outcome {
+        Ok(taken) => Ok(taken),
+        Err((err, counts_as_failure)) => {
+            if counts_as_failure {
+                register_pow_failure(state, client_key, now).await;
+            }
+            Err(err)
+        }
+    }
 }
 
-fn verify_pow_with_payload_hash(
+/// Argon2id salt: binds the proof to this challenge and to the exact payload.
+fn argon2_pow_salt(challenge: &[u8], payload_hash: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(POW_ARGON2_SALT_DOMAIN);
+    hasher.update(challenge);
+    hasher.update(payload_hash);
+    hasher.finalize().into()
+}
+
+/// One Argon2id evaluation: `Argon2id(P = nonce, S = salt, p = 1, T = 32)`, version 0x13.
+fn argon2_pow_tag(
+    nonce: &[u8],
+    salt: &[u8; 32],
+    m_kib: u32,
+    t_cost: u32,
+) -> Result<[u8; POW_ARGON2_TAG_BYTES], argon2::Error> {
+    let params = Params::new(m_kib, t_cost, 1, Some(POW_ARGON2_TAG_BYTES))?;
+    let hasher = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut tag = [0u8; POW_ARGON2_TAG_BYTES];
+    hasher.hash_password_into(nonce, salt, &mut tag)?;
+    Ok(tag)
+}
+
+/// Every 8-byte nonce chunk must be a distinct Argon2id solution with `bits` leading zero
+/// bits. Stops at the first failing chunk so garbage costs one evaluation.
+fn verify_pow_argon2id(
     challenge: &[u8],
     nonce: &[u8],
     payload_hash: &[u8; 32],
-    bits: u8,
-) -> bool {
-    let mut hasher = Sha256::new();
-    hasher.update(challenge);
-    hasher.update(nonce);
-    hasher.update(payload_hash);
-    let digest = hasher.finalize();
-    has_leading_zero_bits(&digest, bits)
+    spec: &PowSpec,
+) -> Result<bool, argon2::Error> {
+    if nonce.len() != spec.nonce_bytes() || !pow_nonce_chunks_are_distinct(nonce) {
+        return Ok(false);
+    }
+    let salt = argon2_pow_salt(challenge, payload_hash);
+    for chunk in nonce.as_chunks::<POW_NONCE_BYTES>().0 {
+        let tag = argon2_pow_tag(chunk, &salt, spec.m_kib, spec.t_cost)?;
+        if !has_leading_zero_bits(&tag, spec.bits) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Repeating one solution `rounds` times must not count as `rounds` solutions.
+fn pow_nonce_chunks_are_distinct(nonce: &[u8]) -> bool {
+    let chunks = nonce.as_chunks::<POW_NONCE_BYTES>().0;
+    chunks
+        .iter()
+        .enumerate()
+        .all(|(i, a)| chunks[..i].iter().all(|b| a != b))
+}
+
+/// Verifies a proof against a taken challenge. Argon2id runs on the blocking pool behind
+/// `POW_VERIFY_CONCURRENCY` permits so verification can never starve the async runtime.
+async fn verify_pow(
+    state: &AppState,
+    entry: &ChallengeEntry,
+    nonce: Vec<u8>,
+    payload_hash: [u8; 32],
+) -> Result<bool, ApiError> {
+    let busy = || {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server_busy",
+            "proof verification unavailable",
+        )
+        .with_retry_after(5)
+    };
+    let _permit = state
+        .inner
+        .pow_verify_permits
+        .acquire()
+        .await
+        .map_err(|_| busy())?;
+    let challenge = entry.challenge_bytes.clone();
+    let spec = entry.spec;
+    let started = std::time::Instant::now();
+    let verified = tokio::task::spawn_blocking(move || {
+        verify_pow_argon2id(&challenge, &nonce, &payload_hash, &spec)
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "proof verification failed",
+        )
+    })?
+    .map_err(|err| {
+        tracing::error!(error = %err, "argon2id verification error");
+        busy()
+    })?;
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        rounds = spec.rounds,
+        m_kib = spec.m_kib,
+        verified,
+        "argon2id proof checked"
+    );
+    Ok(verified)
 }
 
 fn has_leading_zero_bits(digest: &[u8], bits: u8) -> bool {
@@ -1531,16 +1886,26 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
+    /// Argon2id with the smallest supported memory and one round, so handler tests stay fast
+    /// in debug builds; difficulty-specific tests raise bits and rounds explicitly.
     fn test_config() -> AppConfig {
         AppConfig {
             server_salt: vec![42u8; 32],
             challenge_ttl_secs: 5,
-            pow_bits_create: 8,
-            pow_bits_create_max: 12,
-            pow_bits_view: 6,
-            pow_bits_view_max: 10,
+            pow_bits_create: 1,
+            pow_bits_create_max: 2,
+            pow_bits_view: 1,
+            pow_bits_view_max: 1,
+            pow_rounds_create: 1,
+            pow_rounds_view: 1,
+            pow_argon2_m_kib: 256,
+            pow_argon2_t: 1,
+            pow_verify_concurrency: 2,
+            publish_passport: true,
             max_plaintext_bytes: 32768,
             max_blob_bytes: 48 * 1024,
+            max_file_bytes: 0,
+            upload_timeout_secs: DEFAULT_UPLOAD_TIMEOUT_SECS,
             max_active_challenges: DEFAULT_MAX_ACTIVE_CHALLENGES,
             max_notes: DEFAULT_MAX_NOTES,
             max_note_storage_bytes: 64 * 1024 * 1024,
@@ -1609,19 +1974,67 @@ mod tests {
         (status, headers, json)
     }
 
-    fn solve_pow_for_create(challenge_b64: &str, bits: u8, ttl: u64, blob: &str) -> String {
+    /// Parses the scheme `/api/v1/init` advertised, as the client sees it.
+    fn spec_from_init(body: &Value) -> PowSpec {
+        let pow = &body["pow"];
+        assert_eq!(pow["alg"], POW_ALG_ARGON2ID);
+        assert_eq!(pow["params"]["p"], json!(1));
+        assert_eq!(pow["params"]["tag_bytes"], json!(POW_ARGON2_TAG_BYTES));
+        assert_eq!(pow["params"]["nonce_bytes"], json!(POW_NONCE_BYTES));
+        PowSpec {
+            bits: pow["bits"].as_u64().expect("bits") as u8,
+            rounds: pow["rounds"].as_u64().expect("rounds") as u8,
+            m_kib: pow["params"]["m_kib"].as_u64().expect("m_kib") as u32,
+            t_cost: pow["params"]["t"].as_u64().expect("t") as u32,
+        }
+    }
+
+    /// Solves a challenge exactly like the frontend worker: counter nonces, one Argon2id
+    /// evaluation per attempt, `rounds` distinct solutions concatenated.
+    fn solve_pow(challenge_b64: &str, spec: PowSpec, payload_hash: &[u8; 32]) -> String {
         let challenge = URL_SAFE_NO_PAD
             .decode(challenge_b64)
             .expect("challenge must decode");
-
-        for nonce in 0u64.. {
-            let candidate = nonce.to_le_bytes();
-            if verify_pow_for_create(&challenge, &candidate, ttl, blob, bits) {
-                return URL_SAFE_NO_PAD.encode(candidate);
+        let salt = argon2_pow_salt(&challenge, payload_hash);
+        let mut solutions: Vec<u8> = Vec::new();
+        let mut found = 0u8;
+        for counter in 0u64.. {
+            let candidate = counter.to_le_bytes();
+            let tag = argon2_pow_tag(&candidate, &salt, spec.m_kib, spec.t_cost)
+                .expect("argon2id parameters are valid");
+            if has_leading_zero_bits(&tag, spec.bits) {
+                solutions.extend_from_slice(&candidate);
+                found += 1;
+                if found == spec.rounds {
+                    return URL_SAFE_NO_PAD.encode(solutions);
+                }
             }
         }
-
         unreachable!("nonce space is practically unbounded")
+    }
+
+    /// A well-formed nonce (distinct chunks, right length) whose first chunk is not a solution.
+    fn unsolved_nonce(challenge_b64: &str, spec: PowSpec, payload_hash: &[u8; 32]) -> String {
+        let challenge = URL_SAFE_NO_PAD
+            .decode(challenge_b64)
+            .expect("challenge must decode");
+        let salt = argon2_pow_salt(&challenge, payload_hash);
+        let first = (0u64..)
+            .map(u64::to_le_bytes)
+            .find(|candidate| {
+                let tag = argon2_pow_tag(candidate, &salt, spec.m_kib, spec.t_cost).unwrap();
+                !has_leading_zero_bits(&tag, spec.bits)
+            })
+            .expect("must find an unsolved nonce");
+        let mut nonce = first.to_vec();
+        for round in 1..spec.rounds {
+            nonce.extend_from_slice(&(u64::MAX - u64::from(round)).to_le_bytes());
+        }
+        URL_SAFE_NO_PAD.encode(nonce)
+    }
+
+    fn solve_pow_for_create(challenge_b64: &str, spec: PowSpec, ttl: u64, blob: &str) -> String {
+        solve_pow(challenge_b64, spec, &payload_hash_for_create(ttl, blob))
     }
 
     fn fake_aes_blob(seed: &[u8]) -> String {
@@ -1636,22 +2049,11 @@ mod tests {
         URL_SAFE_NO_PAD.encode(vec![0x33u8; 32])
     }
 
-    fn solve_pow_for_view(challenge_b64: &str, bits: u8, nid: &str) -> String {
-        let challenge = URL_SAFE_NO_PAD
-            .decode(challenge_b64)
-            .expect("challenge must decode");
-
-        for nonce in 0u64.. {
-            let candidate = nonce.to_le_bytes();
-            if verify_pow_for_view(&challenge, &candidate, nid, bits) {
-                return URL_SAFE_NO_PAD.encode(candidate);
-            }
-        }
-
-        unreachable!("nonce space is practically unbounded")
+    fn solve_pow_for_view(challenge_b64: &str, spec: PowSpec, nid: &str) -> String {
+        solve_pow(challenge_b64, spec, &payload_hash_for_view(nid))
     }
 
-    async fn init_once(app: &Router, scope: &str) -> (String, u8) {
+    async fn init_once(app: &Router, scope: &str) -> (String, PowSpec) {
         let (status, _, body) = send_json(
             app,
             Method::GET,
@@ -1667,7 +2069,7 @@ mod tests {
                 .as_str()
                 .unwrap_or_default()
                 .to_owned(),
-            body["pow"]["bits"].as_u64().unwrap_or(0) as u8,
+            spec_from_init(&body),
         )
     }
 
@@ -1852,8 +2254,11 @@ mod tests {
     async fn server_signature_matches_the_frontend_interoperability_vector() {
         let fixture: Value =
             serde_json::from_str(include_str!("../tests/fixtures/signed-response.json")).unwrap();
+        let mut config = test_config();
+        // The passport carries the start time; keep the signed vector deterministic.
+        config.publish_passport = false;
         let app = build_router(AppState::with_signing_key(
-            test_config(),
+            config,
             Some(SigningKey::from_bytes(&[7; 32])),
         ));
         let response = app
@@ -2126,16 +2531,23 @@ mod tests {
 
     #[tokio::test]
     async fn payload_bound_pow_rejects_mutated_blob() {
-        let mut cfg = test_config();
-        cfg.pow_bits_create = 14;
-        cfg.pow_bits_create_max = 14;
-        let state = AppState::new(cfg);
+        let state = AppState::new(test_config());
         let app = build_router(state);
-
-        let (challenge, bits) = init_once(&app, "create").await;
         let blob_a = fake_aes_blob(b"blob_a");
         let blob_b = fake_aes_blob(b"blob_b");
-        let nonce = solve_pow_for_create(&challenge, bits, 43_200, &blob_a);
+
+        // A low-difficulty proof can also satisfy another payload by chance; pick a challenge
+        // where it does not, so the assertion below is about binding, not luck.
+        let (challenge, nonce) = loop {
+            let (challenge, spec) = init_once(&app, "create").await;
+            let nonce = solve_pow_for_create(&challenge, spec, 43_200, &blob_a);
+            let challenge_bytes = URL_SAFE_NO_PAD.decode(&challenge).unwrap();
+            let nonce_bytes = URL_SAFE_NO_PAD.decode(&nonce).unwrap();
+            let other = payload_hash_for_create(43_200, &blob_b);
+            if !verify_pow_argon2id(&challenge_bytes, &nonce_bytes, &other, &spec).unwrap() {
+                break (challenge, nonce);
+            }
+        };
 
         let (status, _, body) = send_json(
             &app,
@@ -2156,6 +2568,27 @@ mod tests {
         assert_eq!(
             body["error"]["code"],
             Value::String("invalid_pow".to_owned())
+        );
+
+        // The rejected proof burned the challenge: the genuine payload cannot reuse it.
+        let (status, _, body) = send_json(
+            &app,
+            Method::POST,
+            "/api/v1/notes",
+            Some(json!({
+                "alg": "aes-256-gcm",
+                "challenge": challenge,
+                "nonce": nonce,
+                "ttl": 43200,
+                "blob": blob_a,
+                "view_token": test_view_token()
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"]["code"],
+            Value::String("invalid_challenge".to_owned())
         );
     }
 
@@ -2308,12 +2741,13 @@ mod tests {
                 .expect("challenge must decode");
             let blob = fake_aes_blob(b"ciphertext");
             let ttl = 43_200u64;
-            let wrong_nonce = (0u64..)
-                .map(|n| n.to_le_bytes())
-                .find(|candidate| {
-                    !verify_pow_for_create(&challenge_bytes, candidate, ttl, &blob, bits)
-                })
-                .expect("must find invalid nonce");
+            let wrong_nonce = URL_SAFE_NO_PAD
+                .decode(unsolved_nonce(
+                    &URL_SAFE_NO_PAD.encode(&challenge_bytes),
+                    bits,
+                    &payload_hash_for_create(ttl, &blob),
+                ))
+                .unwrap();
 
             let (status, _, body) = send_json(
                 &app,
@@ -2393,7 +2827,7 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let bits = b1["pow"]["bits"].as_u64().unwrap_or(0) as u8;
+        let bits = spec_from_init(&b1);
 
         let (s2, _, b2) =
             send_json_as(&app, Method::GET, "/api/v1/init?scope=create", None, ip).await;
@@ -2402,7 +2836,7 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let bits2 = b2["pow"]["bits"].as_u64().unwrap_or(0) as u8;
+        let bits2 = spec_from_init(&b2);
         assert_ne!(challenge, challenge2);
         assert_eq!(bits, bits2);
 
@@ -2466,10 +2900,6 @@ mod tests {
     #[tokio::test]
     async fn e2e_read_once_is_atomic_under_parallel_view_requests() {
         let mut cfg = test_config();
-        cfg.pow_bits_create = 10;
-        cfg.pow_bits_create_max = 10;
-        cfg.pow_bits_view = 8;
-        cfg.pow_bits_view_max = 8;
         cfg.challenge_ttl_secs = 60;
         cfg.rate_limits = RateLimits {
             init_per_minute: 1_000,
@@ -2495,7 +2925,7 @@ mod tests {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned(),
-                body["pow"]["bits"].as_u64().unwrap_or(0) as u8,
+                spec_from_init(&body),
                 body,
             )
         };
@@ -2535,7 +2965,7 @@ mod tests {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
-                let bits = init_body["pow"]["bits"].as_u64().unwrap_or(0) as u8;
+                let bits = spec_from_init(&init_body);
                 let nonce = solve_pow_for_view(&challenge, bits, &nid);
                 let (status, _, _) = send_json_as(
                     &app,
@@ -2571,8 +3001,6 @@ mod tests {
     #[tokio::test]
     async fn e2e_challenge_is_one_time_under_parallel_send_requests() {
         let mut cfg = test_config();
-        cfg.pow_bits_create = 10;
-        cfg.pow_bits_create_max = 10;
         cfg.challenge_ttl_secs = 60;
         cfg.rate_limits = RateLimits {
             init_per_minute: 1_000,
@@ -2583,7 +3011,7 @@ mod tests {
         let app = build_router(state);
 
         let ip = "203.0.113.20";
-        let (challenge, bits): (String, u8) = {
+        let (challenge, bits): (String, PowSpec) = {
             let (status, _, body) =
                 send_json_as(&app, Method::GET, "/api/v1/init?scope=create", None, ip).await;
             assert_eq!(status, StatusCode::OK);
@@ -2592,7 +3020,7 @@ mod tests {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned(),
-                body["pow"]["bits"].as_u64().unwrap_or(0) as u8,
+                spec_from_init(&body),
             )
         };
         let blob = fake_aes_blob(b"nonce_and_ciphertext");
@@ -2652,8 +3080,6 @@ mod tests {
     #[tokio::test]
     async fn e2e_parallel_pow_and_send_requests_succeed() {
         let mut cfg = test_config();
-        cfg.pow_bits_create = 10;
-        cfg.pow_bits_create_max = 10;
         cfg.challenge_ttl_secs = 60;
         cfg.rate_limits = RateLimits {
             init_per_minute: 1_000,
@@ -2675,7 +3101,7 @@ mod tests {
                     .as_str()
                     .unwrap_or_default()
                     .to_owned();
-                let bits = init_body["pow"]["bits"].as_u64().unwrap_or(0) as u8;
+                let bits = spec_from_init(&init_body);
                 let blob = fake_aes_blob(format!("cipher-{idx}").as_bytes());
                 let nonce = solve_pow_for_create(&challenge, bits, 43_200, &blob);
 
@@ -2710,6 +3136,466 @@ mod tests {
             success_count, 12,
             "all parallel PoW+send flows must succeed"
         );
+    }
+
+    fn hex_lower(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Argon2id ticket with several rounds, to exercise multi-solution proofs.
+    fn test_config_rounds() -> AppConfig {
+        let mut config = test_config();
+        config.pow_rounds_create = 2;
+        config.pow_rounds_view = 2;
+        config.challenge_ttl_secs = 60;
+        config
+    }
+
+    async fn post_note(
+        app: &Router,
+        challenge: &str,
+        nonce: &str,
+        blob: &str,
+    ) -> (StatusCode, Value) {
+        let (status, _, body) = send_json(
+            app,
+            Method::POST,
+            "/api/v1/notes",
+            Some(json!({
+                "alg": NOTE_ALG, "challenge": challenge, "nonce": nonce, "ttl": NOTE_TTLS[0],
+                "blob": blob, "view_token": test_view_token()
+            })),
+        )
+        .await;
+        (status, body)
+    }
+
+    async fn read_note(app: &Router, nid: &str) -> (StatusCode, Value) {
+        let (challenge, spec) = init_once(app, "view").await;
+        let nonce = solve_pow_for_view(&challenge, spec, nid);
+        let (status, _, body) = send_json(
+            app,
+            Method::POST,
+            &format!("/api/v1/notes/{nid}/view"),
+            Some(json!({
+                "challenge": challenge, "nonce": nonce, "view_token": test_view_token()
+            })),
+        )
+        .await;
+        (status, body)
+    }
+
+    #[test]
+    fn argon2id_matches_the_rfc_9106_test_vector() {
+        // RFC 9106 §5.3: Argon2id, m=32 KiB, t=3, p=4, 32-byte tag, with secret K and data X.
+        let params = argon2::ParamsBuilder::new()
+            .m_cost(32)
+            .t_cost(3)
+            .p_cost(4)
+            .data(argon2::AssociatedData::new(&[0x04; 12]).unwrap())
+            .output_len(32)
+            .build()
+            .unwrap();
+        let hasher =
+            Argon2::new_with_secret(&[0x03; 8], Algorithm::Argon2id, Version::V0x13, params)
+                .unwrap();
+        let mut tag = [0u8; 32];
+        hasher
+            .hash_password_into(&[0x01; 32], &[0x02; 16], &mut tag)
+            .unwrap();
+        assert_eq!(
+            hex_lower(&tag),
+            "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"
+        );
+    }
+
+    #[test]
+    fn argon2id_pow_matches_the_frontend_interoperability_vector() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/pow-argon2id-vector.json"))
+                .unwrap();
+        assert_eq!(fixture["alg"], POW_ALG_ARGON2ID);
+        assert_eq!(
+            fixture["salt_domain"].as_str().unwrap().as_bytes(),
+            POW_ARGON2_SALT_DOMAIN
+        );
+        let challenge = URL_SAFE_NO_PAD
+            .decode(fixture["challenge"].as_str().unwrap())
+            .unwrap();
+        let ttl = fixture["create"]["ttl"].as_u64().unwrap();
+        let blob = fixture["create"]["blob"].as_str().unwrap();
+        let payload_hash = payload_hash_for_create(ttl, blob);
+        assert_eq!(
+            hex_lower(&payload_hash),
+            fixture["payload_hash_hex"].as_str().unwrap()
+        );
+        let salt = argon2_pow_salt(&challenge, &payload_hash);
+        assert_eq!(hex_lower(&salt), fixture["salt_hex"].as_str().unwrap());
+
+        let m_kib = fixture["params"]["m_kib"].as_u64().unwrap() as u32;
+        let t_cost = fixture["params"]["t"].as_u64().unwrap() as u32;
+        for case in fixture["cases"].as_array().unwrap() {
+            let nonce = URL_SAFE_NO_PAD
+                .decode(case["nonce"].as_str().unwrap())
+                .unwrap();
+            let tag = argon2_pow_tag(&nonce, &salt, m_kib, t_cost).unwrap();
+            assert_eq!(hex_lower(&tag), case["tag_hex"].as_str().unwrap());
+        }
+
+        let solved = &fixture["solved"];
+        let spec = PowSpec {
+            bits: solved["bits"].as_u64().unwrap() as u8,
+            rounds: solved["rounds"].as_u64().unwrap() as u8,
+            m_kib,
+            t_cost,
+        };
+        let nonce = URL_SAFE_NO_PAD
+            .decode(solved["nonce"].as_str().unwrap())
+            .unwrap();
+        assert!(verify_pow_argon2id(&challenge, &nonce, &payload_hash, &spec).unwrap());
+
+        // One extra bit of difficulty, a different payload, or a repeated solution all fail.
+        let harder = PowSpec {
+            bits: spec.bits + 1,
+            ..spec
+        };
+        assert!(!verify_pow_argon2id(&challenge, &nonce, &payload_hash, &harder).unwrap());
+        let other_payload = payload_hash_for_create(ttl + 1, blob);
+        assert!(!verify_pow_argon2id(&challenge, &nonce, &other_payload, &spec).unwrap());
+        let repeated: Vec<u8> = [&nonce[..8], &nonce[..8]].concat();
+        assert!(!verify_pow_argon2id(&challenge, &repeated, &payload_hash, &spec).unwrap());
+        assert!(!verify_pow_argon2id(&challenge, &nonce[..8], &payload_hash, &spec).unwrap());
+    }
+
+    #[test]
+    fn nonce_chunks_must_be_pairwise_distinct() {
+        assert!(pow_nonce_chunks_are_distinct(&[
+            1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0
+        ]));
+        assert!(!pow_nonce_chunks_are_distinct(&[7u8; 16]));
+        assert!(pow_nonce_chunks_are_distinct(&[7u8; 8]));
+    }
+
+    #[test]
+    fn legacy_pow_settings_are_rejected_instead_of_clamped() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            }
+        };
+        assert!(check_pow_env(env(&[])).is_ok());
+        assert!(check_pow_env(env(&[("POW_ALG", "argon2id")])).is_ok());
+        assert!(check_pow_env(env(&[("POW_ALG", " ARGON2ID ")])).is_ok());
+        assert!(check_pow_env(env(&[("POW_BITS_CREATE", "12"), ("POW_BITS_VIEW", "3")])).is_ok());
+        let err = check_pow_env(env(&[("POW_ALG", "sha256")])).unwrap_err();
+        assert!(
+            err.contains("POW_ALG") && err.contains("docs/pow-spec.md"),
+            "{err}"
+        );
+        for name in POW_BITS_ENV_VARS {
+            let pairs: &'static [(&'static str, &'static str)] =
+                Box::leak(vec![(name, "17")].into_boxed_slice());
+            let err = check_pow_env(env(pairs)).unwrap_err();
+            assert!(err.starts_with(name), "{err}");
+        }
+        // Unparseable values keep their previous meaning (fall back to the default).
+        assert!(check_pow_env(env(&[("POW_BITS", "lots")])).is_ok());
+    }
+
+    #[tokio::test]
+    async fn init_advertises_the_argon2id_scheme_and_file_limits() {
+        let app = build_router(AppState::new(test_config_rounds()));
+        let (status, _, body) = send_json(&app, Method::GET, "/api/v1/init", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["pow"]["alg"], POW_ALG_ARGON2ID);
+        assert_eq!(body["pow"]["scope"], "create");
+        assert_eq!(body["pow"]["rounds"], json!(2));
+        assert_eq!(
+            body["pow"]["params"],
+            json!({ "m_kib": 256, "t": 1, "p": 1, "tag_bytes": 32, "nonce_bytes": 8 })
+        );
+        assert_eq!(body["limits"]["max_file_bytes"], json!(0));
+        assert_eq!(body["limits"]["max_plaintext_bytes"], json!(32768));
+        assert_eq!(body["limits"]["max_blob_bytes"], json!(48 * 1024));
+        let (_, _, info) = send_json(&app, Method::GET, "/info", None).await;
+        assert_eq!(info["max_file_bytes"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn argon2id_round_trip_binds_payload_rounds_and_length() {
+        let app = build_router(AppState::new(test_config_rounds()));
+        let blob = fake_aes_blob(b"argon2id round trip");
+        let ttl = NOTE_TTLS[0];
+
+        // A proof for one blob does not transfer to another (pick a challenge where it does
+        // not hold by chance at this low test difficulty).
+        let other_blob = fake_aes_blob(b"argon2id other blob");
+        let (challenge, nonce) = loop {
+            let (challenge, spec) = init_once(&app, "create").await;
+            assert_eq!(spec.rounds, 2);
+            let nonce = solve_pow_for_create(&challenge, spec, ttl, &blob);
+            let other = payload_hash_for_create(ttl, &other_blob);
+            if !verify_pow_argon2id(
+                &URL_SAFE_NO_PAD.decode(&challenge).unwrap(),
+                &URL_SAFE_NO_PAD.decode(&nonce).unwrap(),
+                &other,
+                &spec,
+            )
+            .unwrap()
+            {
+                break (challenge, nonce);
+            }
+        };
+        assert_eq!(URL_SAFE_NO_PAD.decode(&nonce).unwrap().len(), 16);
+        let (status, body) = post_note(&app, &challenge, &nonce, &other_blob).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_pow");
+
+        // Repeating one solution for both rounds is not two solutions.
+        let (challenge, spec) = init_once(&app, "create").await;
+        let nonce = solve_pow_for_create(&challenge, spec, ttl, &blob);
+        let nonce_bytes = URL_SAFE_NO_PAD.decode(&nonce).unwrap();
+        let first = &nonce_bytes[..8];
+        let repeated = URL_SAFE_NO_PAD.encode([first, first].concat());
+        let (status, body) = post_note(&app, &challenge, &repeated, &blob).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_pow");
+
+        // A single-round nonce has the wrong length for a two-round ticket; a malformed
+        // nonce does not cost a verification and leaves the challenge usable.
+        let (challenge, spec) = init_once(&app, "create").await;
+        let nonce = solve_pow_for_create(&challenge, spec, ttl, &blob);
+        let first = &URL_SAFE_NO_PAD.decode(&nonce).unwrap()[..8];
+        let (status, body) =
+            post_note(&app, &challenge, &URL_SAFE_NO_PAD.encode(first), &blob).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_nonce");
+
+        // The genuine proof creates the note; the challenge is then consumed.
+        let (status, body) = post_note(&app, &challenge, &nonce, &blob).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let nid = body["nid"].as_str().unwrap().to_owned();
+        let (status, body) = post_note(&app, &challenge, &nonce, &blob).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_challenge");
+
+        // Reading uses the view scope with its own rounds and the nid-bound payload hash.
+        let (status, body) = read_note(&app, &nid).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["blob"], Value::String(blob.clone()));
+        assert_eq!(body["deleted"], Value::Bool(true));
+        assert_eq!(read_note(&app, &nid).await.0, StatusCode::GONE);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_proof_burns_the_challenge() {
+        let app = build_router(AppState::new(test_config_rounds()));
+        let blob = fake_aes_blob(b"burned challenge");
+        let (challenge, spec) = init_once(&app, "create").await;
+        let wrong = unsolved_nonce(
+            &challenge,
+            spec,
+            &payload_hash_for_create(NOTE_TTLS[0], &blob),
+        );
+        let (status, body) = post_note(&app, &challenge, &wrong, &blob).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_pow");
+        let right = solve_pow_for_create(&challenge, spec, NOTE_TTLS[0], &blob);
+        let (status, body) = post_note(&app, &challenge, &right, &blob).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_challenge");
+    }
+
+    #[tokio::test]
+    async fn argon2id_wrong_proof_counts_as_pow_failure() {
+        let mut cfg = test_config_rounds();
+        cfg.ban_short_secs = 600;
+        let app = build_router(AppState::new(cfg));
+        let blob = fake_aes_blob(b"argon2id wrong proof");
+        let payload_hash = payload_hash_for_create(NOTE_TTLS[0], &blob);
+        for _ in 0..3 {
+            let (challenge, spec) = init_once(&app, "create").await;
+            let garbage = unsolved_nonce(&challenge, spec, &payload_hash);
+            let (status, body) = post_note(&app, &challenge, &garbage, &blob).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["error"]["code"], "invalid_pow");
+        }
+        let (status, _, body) = send_json(&app, Method::GET, "/api/v1/init", None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "banned");
+    }
+
+    #[test]
+    fn file_budget_extends_the_effective_limits() {
+        let mut config = test_config();
+        assert_eq!(config.effective_max_plaintext_bytes(), 32768);
+        assert_eq!(config.effective_max_blob_bytes(), 48 * 1024);
+        assert_eq!(config.request_timeout(), Duration::from_secs(10));
+        assert_eq!(config.signed_response_limit(), SIG_BODY_LIMIT_MIN);
+        config.max_file_bytes = 1_000_000;
+        let plaintext = 32768 + FILE_ENVELOPE_OVERHEAD_BYTES + 1_000_000;
+        assert_eq!(config.effective_max_plaintext_bytes(), plaintext);
+        assert_eq!(
+            config.effective_max_blob_bytes(),
+            (NOTE_NONCE_BYTES + NOTE_TAG_BYTES + plaintext) * 4 / 3 + 1
+        );
+        assert_eq!(
+            config.signed_response_limit(),
+            config.effective_max_blob_bytes() + JSON_BODY_OVERHEAD_BYTES
+        );
+        assert_eq!(
+            config.request_timeout(),
+            Duration::from_secs(DEFAULT_UPLOAD_TIMEOUT_SECS)
+        );
+    }
+
+    #[tokio::test]
+    async fn file_notes_within_the_admin_budget_round_trip() {
+        let mut config = test_config();
+        config.max_file_bytes = 200_000;
+        let effective_blob = config.effective_max_blob_bytes();
+        let app = build_router(AppState::new(config));
+
+        let (_, _, init) = send_json(&app, Method::GET, "/api/v1/init", None).await;
+        assert_eq!(init["limits"]["max_file_bytes"], json!(200_000));
+        assert_eq!(init["limits"]["max_plaintext_bytes"], json!(32768));
+        assert_eq!(init["limits"]["max_blob_bytes"], json!(effective_blob));
+        let (_, _, info) = send_json(&app, Method::GET, "/info", None).await;
+        assert_eq!(info["max_file_bytes"], json!(200_000));
+
+        // Larger than any text note, inside the file budget: accepted and read back intact.
+        let blob = fake_aes_blob(&vec![0x5a; 150_000]);
+        assert!(blob.len() > MAX_SUPPORTED_BLOB_BYTES);
+        let (status, body) = create_test_note(&app, &blob).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let nid = body["nid"].as_str().unwrap().to_owned();
+        let (status, body) = read_note(&app, &nid).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["blob"], Value::String(blob));
+
+        // Over the effective plaintext budget: rejected before any proof is checked.
+        let over = 32768 + FILE_ENVELOPE_OVERHEAD_BYTES + 200_000 + 1;
+        let blob = fake_aes_blob(&vec![0x5a; over]);
+        assert!(blob.len() > effective_blob);
+        let (challenge, _) = init_once(&app, "create").await;
+        let (status, body) = post_note(&app, &challenge, "AAAAAAAAAAA", &blob).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body["error"]["code"], "blob_too_large");
+
+        // Beyond the request body limit: rejected while reading the body.
+        let (status, _, body) = send_json(
+            &app,
+            Method::POST,
+            "/api/v1/notes",
+            Some(json!({ "padding": "x".repeat(effective_blob + JSON_BODY_OVERHEAD_BYTES + 1) })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body["error"]["code"], "body_too_large");
+    }
+
+    #[tokio::test]
+    async fn file_uploads_stay_disabled_by_default() {
+        let app = build_router(AppState::new(test_config()));
+        // Fits the text blob limit but exceeds the text plaintext limit: without a file budget
+        // there is nothing else it could be.
+        let blob = fake_aes_blob(&vec![0x5a; 34_000]);
+        assert!(blob.len() <= 48 * 1024);
+        let (challenge, _) = init_once(&app, "create").await;
+        let (status, body) = post_note(&app, &challenge, "AAAAAAAAAAA", &blob).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body["error"]["code"], "plaintext_too_large");
+        let blob = fake_aes_blob(&vec![0x5a; 40_000]);
+        let (status, _, body) = send_json(
+            &app,
+            Method::POST,
+            "/api/v1/notes",
+            Some(json!({
+                "alg": NOTE_ALG, "challenge": challenge, "nonce": "AAAAAAAAAAA",
+                "ttl": NOTE_TTLS[0], "blob": blob, "view_token": test_view_token()
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body["error"]["code"], "body_too_large");
+    }
+
+    #[tokio::test]
+    async fn info_publishes_the_instance_passport_unless_disabled() {
+        let passport = InstancePassport::collect(hardening::harden_process());
+        let state = AppState::with_passport(test_config(), None, passport.clone());
+        let app = build_router(state);
+        let (status, _, body) = send_json(&app, Method::GET, "/info", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let published = &body["passport"];
+        assert_eq!(
+            published["version"],
+            Value::String(env!("CARGO_PKG_VERSION").to_owned())
+        );
+        assert_eq!(published["started_at"], json!(passport.started_at));
+        assert!(published["uptime_secs"].is_u64());
+        assert_eq!(
+            published["binary_sha256"].as_str().map(str::len),
+            Some(64),
+            "the test binary must be hashable"
+        );
+        assert_eq!(published["ram_only"]["zeroize_on_drop"], Value::Bool(true));
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(published["ram_only"]["dumpable"], Value::Bool(false));
+            assert!(published["ram_only"]["memory_locked"].is_boolean());
+            assert!(published["ram_only"]["swap_present"].is_boolean());
+        }
+        #[cfg(unix)]
+        assert_eq!(
+            published["ram_only"]["core_dump_limit_zero"],
+            Value::Bool(true)
+        );
+
+        let mut quiet = test_config();
+        quiet.publish_passport = false;
+        let app = build_router(AppState::new(quiet));
+        let (_, _, body) = send_json(&app, Method::GET, "/info", None).await;
+        assert!(body.get("passport").is_none());
+        assert!(body["notes"].is_u64());
+    }
+
+    #[test]
+    fn note_entries_zeroize_their_ciphertext_when_dropped() {
+        // Observable through the moved-out String: the store copy is emptied before drop and
+        // the response wrapper serializes what it holds.
+        let mut entry = NoteEntry {
+            blob: "ciphertext".to_owned(),
+            view_token_hash: [7u8; 32],
+            expires_at: 1,
+        };
+        let blob = std::mem::take(&mut entry.blob);
+        assert_eq!(entry.blob, "");
+        drop(entry);
+        let secret = SecretString(blob);
+        assert_eq!(serde_json::to_string(&secret).unwrap(), "\"ciphertext\"");
+        let mut hash = [7u8; 32];
+        hash.zeroize();
+        assert_eq!(hash, [0u8; 32]);
+    }
+
+    /// Native verification cost of one 4 MiB evaluation, for docs/pow-spec.md.
+    /// `cargo test --release -- --ignored --nocapture argon2id_native_cost`
+    #[test]
+    #[ignore = "benchmark"]
+    fn argon2id_native_cost() {
+        let salt = [9u8; 32];
+        for (m_kib, iterations) in [(4096u32, 50u32), (256, 200)] {
+            let started = std::time::Instant::now();
+            for i in 0..iterations {
+                argon2_pow_tag(&u64::from(i).to_le_bytes(), &salt, m_kib, 1).unwrap();
+            }
+            let per = started.elapsed() / iterations;
+            println!("argon2id m={m_kib} KiB t=1: {per:?} per evaluation");
+        }
     }
 
     #[test]

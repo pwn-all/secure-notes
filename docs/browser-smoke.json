@@ -1,20 +1,43 @@
 {
-  "browser": "HeadlessChrome/149.0.7827.55",
-  "utf8Bytes": 32768,
-  "requests": 14,
-  "cacheEntries": 8,
+  "browser": "HeadlessChrome/141.0.7390.37",
+  "date": "2026-11-10",
+  "server": "target/release/secure_notes and the secnote Docker image (TLS, MAX_FILE_BYTES=10485760, default Argon2id PoW: 4 MiB, t=1, create 4 bits x 4 rounds, view 3 bits x 2 rounds, memlock unlimited)",
   "errors": 0,
-  "checks": [
-    "AES-GCM 32768-byte Unicode create/read",
-    "contextual signature verified by browser",
-    "PoW worker",
-    "QR generation under CSP",
-    "read clears URL fragment",
-    "browser back clears plaintext",
-    "second read returns burned",
-    "AES key absent from API requests",
-    "cross-origin CORS create/read with pinned API",
-    "burn clears plaintext",
-    "public cache URLs contain no secret query/fragment"
-  ]
+  "expectedConsoleErrors": [
+    "service worker registration refused for the self-signed test certificate (verified separately with the certificate accepted)",
+    "410 response when the burned note is opened a second time"
+  ],
+  "viewports": {
+    "phones": ["iPhone 17e 390x664", "iPhone 17 402x694", "iPhone 17 Pro Max 440x776", "iPhone SE 375x547", "Pixel 9a 412x847", "Pixel 10 412x847", "Galaxy S24 360x704", "360x724", "384x756", "393x783", "412x839", "414x736", "375x635", "428x746", "320x460"],
+    "languages": ["en", "de", "ru", "bn", "ar (RTL)"],
+    "landscape": ["iPhone 17 Pro Max 956x400", "Pixel 9a 923x360"],
+    "tablets": ["iPad mini 744x1031", "iPad 11 820x1080 and 1180x720", "iPad Pro 13 1032x1276 and 1376x932", "Galaxy Tab S9 800x1192 and 1280x712"],
+    "desktops": ["13in 1280x700 and 1470x860", "15in 1536x760 and 1710x1010", "16.2in 1728x1010", "17in 1920x970 and 1280x910", "22in 1920x970", "1366x658", "1440x790", "27in 2560x1330", "40in 4K at 150% 2560x1330", "40in 4K at 100% 3840x2050", "40in 5K2K 5120x2050"]
+  },
+  "auditedPerViewport": [
+    "no horizontal page scroll and no visible element outside the viewport",
+    "no clipped button or chip text",
+    "composer inside the viewport, 10% above the bottom edge (compensated for interface zoom on large screens)",
+    "brand and top-right controls do not overlap",
+    "touch targets at least 28x28 CSS px on coarse pointers",
+    "privacy policy modal fits the viewport"
+  ],
+  "flowsPerViewport": [
+    "home, slash-command menu, /faq animated explainer",
+    "send a note with an attachment: typing statuses, blurred one-time link",
+    "settings drawer with the server card and the address form",
+    "recipient: pinned-key check, Argon2id pre-solve, read and destroy, decrypted text and file download"
+  ],
+  "productionChecks": [
+    "Docker image builds; container runs as UID/GID 65532 with NoNewPrivs and only the low-port bind capability",
+    "signed /info passport reports dumpable=false, core dumps off, memory locked with --ulimit memlock=-1:-1",
+    "security headers (CSP, HSTS, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy) and HTTP to HTTPS redirect",
+    "service worker caches the shell including argon2.js; with the server down the page loads from cache, shows offline and reports the send error",
+    "cargo fmt, clippy -D warnings, cargo test, cargo audit --deny warnings, runtime smoke against the release binary"
+  ],
+  "powTiming": {
+    "desktopMedianMs": 960,
+    "cpuThrottleX4MedianMs": 4798,
+    "note": "4 rounds x 2^4 expected evaluations at ~14 ms (desktop) / ~59 ms (x4 throttle) per 4 MiB Argon2id evaluation, measured on the main thread; CDP throttling does not apply to Web Workers"
+  }
 }

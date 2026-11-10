@@ -62,7 +62,8 @@
       "Burn after read — note permanently deleted on first open",
       "RAM-only storage — no database, no disk writes",
       "No account or sign-up required",
-      "Proof-of-Work anti-spam protection",
+      "Memory-hard Argon2id proof-of-work instead of CAPTCHAs",
+      "Optional end-to-end encrypted file attachments (enabled by the operator)",
       "Self-hostable open-source backend",
       "Multilingual interface — 12 languages",
       "GDPR compliant — no cookies, no tracking, no PII collected"
@@ -184,537 +185,186 @@
 </head>
 <body>
 
-<!-- ══════════════════════════════════════
-     NAV
-══════════════════════════════════════ -->
-<nav class="nav" role="navigation" aria-label="Main">
-  <div class="nav-inner">
+<svg class="svg-defs" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="15.5" r="1.4" fill="currentColor"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5a7.7 7.7 0 0 0 0-3l2-1.6-2-3.4-2.4.9a7.6 7.6 0 0 0-2.6-1.5L14 2.4h-4l-.4 2.5A7.6 7.6 0 0 0 7 6.4l-2.4-.9-2 3.4 2 1.6a7.7 7.7 0 0 0 0 3l-2 1.6 2 3.4 2.4-.9a7.6 7.6 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5a7.6 7.6 0 0 0 2.6-1.5l2.4.9 2-3.4-2-1.6Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+    <symbol id="i-clip" viewBox="0 0 24 24"><path d="m20.5 11.3-8.2 8.2a5.3 5.3 0 0 1-7.5-7.5l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 3v5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 21a6 6 0 0 0 6-6c0-3.6-2.5-5.6-3.6-8.6-.4 2-1.4 3.2-2.7 3.9C11.9 7.6 10.6 5 8.5 3c.4 3.4-2.5 5.9-2.5 10a6 6 0 0 0 6 8Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="13" r="7.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.5V13l2.4 1.6M9.5 3h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5L8 5.5Z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5.5v13M16 5.5v13" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-replay" viewBox="0 0 24 24"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4.5v4.2h4.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 20h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
 
-    <div class="brand" aria-label="SecNote home">
-      <!-- hand-drawn lock icon -->
-      <svg class="lock-icon" width="18" height="20" viewBox="0 0 18 20" fill="none"
-           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M3 9 L3 17 L15 17 L15 9 Z"/>
-        <path d="M5.5 9 Q5 4 9 4 Q13 4 12.5 9" opacity="0.85"/>
-        <circle cx="9" cy="13" r="1.2" fill="currentColor"/>
-      </svg>
-      <span class="brand-name">secure note</span>
-    </div>
+<div class="app" id="app">
 
-    <div class="nav-right">
-      <!-- API badge: green dot + url, click to open settings -->
-      <button class="api-badge" id="apiBadge" title="API settings" aria-haspopup="dialog">
-        <span class="dot" id="apiDot" aria-hidden="true"></span>
-        <span class="api-label" aria-hidden="true">api:</span>
-        <span class="api-host" id="apiHost">—</span>
+  <!-- ═════ Top bar: brand · health signal | settings ═════ -->
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="SecNote">
+      <svg class="brand-icon" aria-hidden="true"><use href="#i-lock"/></svg>
+      <span class="brand-name">SecNote</span>
+    </a>
+    <div class="topbar-right">
+      <button type="button" class="health" id="healthBtn" aria-haspopup="dialog" aria-describedby="healthLbl">
+        <span class="health-dot" id="apiDot" aria-hidden="true"></span>
+        <span class="health-lbl" id="healthLbl" data-i18n="HEALTH_CHECKING">connecting…</span>
       </button>
-
-      <!-- Language picker -->
-      <div class="lang-wrap" id="langWrap">
-        <button class="lang-btn sk" id="langBtn" aria-label="Select language" aria-haspopup="listbox">
-          <svg width="13" height="13" viewBox="0 0 14 14" fill="none"
-               stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
-            <circle cx="7" cy="7" r="5.5"/>
-            <path d="M7 1.5 C5.2 3.5 5.2 10.5 7 12.5"/>
-            <path d="M7 1.5 C8.8 3.5 8.8 10.5 7 12.5"/>
-            <path d="M1.5 7 h11"/>
-          </svg>
-          <span id="langCode">en</span>
-        </button>
-        <ul class="lang-menu hidden" id="langMenu" role="listbox" aria-label="Select language">
-          <li role="option" data-lang="en">English</li>
-          <li role="option" data-lang="de">Deutsch</li>
-          <li role="option" data-lang="es">Español</li>
-          <li role="option" data-lang="fr">Français</li>
-          <li role="option" data-lang="pt">Português</li>
-          <li role="option" data-lang="ru">Русский</li>
-          <li role="option" data-lang="ua">Українська</li>
-          <li role="option" data-lang="ar">العربية</li>
-          <li role="option" data-lang="bn">বাংলা</li>
-          <li role="option" data-lang="cn">中文</li>
-          <li role="option" data-lang="hi">हिन्दी</li>
-          <li role="option" data-lang="ur">اردو</li>
-        </ul>
-      </div>
-
-      <!-- Settings -->
-      <button class="cog-btn sk" id="cogBtn" aria-label="Settings" aria-haspopup="dialog">
-        <svg width="15" height="15" viewBox="0 0 15 15" fill="none"
-             stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
-          <line x1="1" y1="3.5" x2="9.5" y2="3.5"/>
-          <line x1="12.5" y1="3.5" x2="14" y2="3.5"/>
-          <circle cx="11" cy="3.5" r="1.5"/>
-          <line x1="1" y1="7.5" x2="3.5" y2="7.5"/>
-          <line x1="6.5" y1="7.5" x2="14" y2="7.5"/>
-          <circle cx="5" cy="7.5" r="1.5"/>
-          <line x1="1" y1="11.5" x2="7.5" y2="11.5"/>
-          <line x1="10.5" y1="11.5" x2="14" y2="11.5"/>
-          <circle cx="9" cy="11.5" r="1.5"/>
-        </svg>
+      <span class="topbar-sep" aria-hidden="true"></span>
+      <button type="button" class="icon-btn" id="cogBtn" aria-label="Settings" aria-haspopup="dialog" data-i18n-aria="SETTINGS_TITLE">
+        <svg aria-hidden="true"><use href="#i-gear"/></svg>
       </button>
     </div>
+  </header>
 
-  </div>
-</nav>
-
-<!-- ══════════════════════════════════════
-     SCREEN: Compose
-══════════════════════════════════════ -->
-<main class="screen" id="sCompose">
-  <div class="col">
-
-    <div class="compose-head">
-      <div class="compose-title">
-        <h1 class="h1" data-i18n="COMPOSE_TITLE">create note</h1>
-        <svg class="squig" width="180" height="10" viewBox="0 0 180 10" aria-hidden="true">
-          <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5
-                   Q90,1 100,5 Q110,9 120,5 Q130,1 140,5 Q150,9 160,5 Q170,1 180,5"
-                fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-        </svg>
+  <!-- ═════ Conversation ═════ -->
+  <main class="chat" id="chat">
+    <section class="hero" id="hero" aria-labelledby="heroTitle">
+      <div class="hero-mark" aria-hidden="true"><svg><use href="#i-lock"/></svg></div>
+      <h1 class="hero-title" id="heroTitle" data-i18n="HERO_TITLE">What secret do you want to share?</h1>
+      <p class="hero-sub" data-i18n-html="HERO_SUB">It is encrypted in your browser, can be read exactly once, and then it is gone. Type <code>/faq</code> to see how it works.</p>
+      <div class="hero-chips">
+        <button type="button" class="chip" data-cmd="/faq"><code>/faq</code> <span data-i18n="CMD_FAQ">how the service works</span></button>
+        <button type="button" class="chip" data-cmd="/help"><code>/help</code> <span data-i18n="CMD_HELP">all commands</span></button>
       </div>
-      <div class="ttl-row" role="radiogroup" aria-label="Note lifetime">
-        <label class="ttl-chip">
-          <input type="radio" name="ttl" value="43200" checked>
-          <span>12 h</span>
-        </label>
-        <label class="ttl-chip">
-          <input type="radio" name="ttl" value="86400">
-          <span>24 h</span>
-        </label>
-      </div>
-    </div>
+    </section>
+    <div class="chat-log" id="chatLog" role="log" aria-live="polite" aria-label="Conversation"></div>
+  </main>
 
-    <!-- Note textarea -->
-    <div class="note-card sk">
-      <textarea id="noteInput"
-                maxlength="32768"
-                placeholder="your message here…"
-               data-i18n-ph="SECNOTE_UI_13"
-                autocomplete="off"
-                spellcheck="false"
-                aria-label="Secret message"
+  <!-- ═════ Composer ═════ -->
+  <footer class="dock" id="dock">
+    <div class="cmd-menu hidden" id="cmdMenu" role="listbox" aria-label="Commands"></div>
+    <form class="composer" id="composer" autocomplete="off">
+      <div class="attach-list" id="attachList" hidden></div>
+      <label class="sr-only" for="noteInput" data-i18n="COMPOSER_LABEL">Secret message</label>
+      <textarea id="noteInput" rows="1" spellcheck="false" autocomplete="off"
+                placeholder="Write a secret…" data-i18n-ph="COMPOSER_PH"
                 aria-describedby="charTxt"></textarea>
-      <div class="char-wrap" aria-hidden="true">
-        <svg class="ring-svg" width="26" height="26" viewBox="0 0 28 28">
-          <circle cx="14" cy="14" r="10" fill="none" stroke-width="1.2" class="ring-track" pathLength="100"/>
-          <circle id="ringFill" cx="14" cy="14" r="10" fill="none"
-                  stroke-width="2" stroke-linecap="round"
-                  class="ring-fill" transform="rotate(-90 14 14)"
-                  pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
-        </svg>
-        <span class="char-txt" id="charTxt">0 / 32768</span>
+      <div class="composer-row">
+        <button type="button" class="icon-btn attach-btn" id="attachBtn" hidden aria-label="Attach files" data-i18n-aria="ATTACH">
+          <svg aria-hidden="true"><use href="#i-clip"/></svg>
+        </button>
+        <input type="file" id="fileInput" multiple hidden tabindex="-1">
+        <button type="button" class="ttl-chip" id="ttlChip" aria-label="Link lifetime" data-i18n-aria="SETTINGS_TTL">
+          <svg aria-hidden="true"><use href="#i-clock"/></svg><span id="ttlChipLbl">12h</span>
+        </button>
+        <span class="char-count" id="charTxt" aria-live="polite"></span>
+        <span class="spacer"></span>
+        <button type="submit" class="send-btn" id="sendBtn" disabled aria-label="Send" data-i18n-aria="SEND">
+          <svg aria-hidden="true"><use href="#i-send"/></svg>
+        </button>
       </div>
-    </div>
-
-    <!-- Status bar + Send button -->
-    <div class="compose-row">
-      <div class="status-side" aria-live="polite" aria-label="Progress">
-        <div class="status-lbl" id="stageLbl">idle</div>
-        <div class="segs sk" id="segs" aria-hidden="true">
-          <div class="seg" id="s1"></div>
-          <div class="seg" id="s2"></div>
-          <div class="seg" id="s3"></div>
-          <div class="seg" id="s4"></div>
-        </div>
-      </div>
-      <div class="send-side">
-        <button class="btn btn-accent sk" id="sendBtn" disabled data-i18n="COMPOSE_SEND_BTN">encrypt &amp; send →</button>
-      </div>
-    </div>
-
-    <div class="open-link-card sk">
-      <div class="open-link-copy">
-        <span class="open-link-kicker" data-i18n="COMPOSE_OPEN_KICKER">got a link already?</span>
-        <p class="open-link-hint" data-i18n="COMPOSE_OPEN_HINT">paste a full shared URL here to open it with this copy, even if you run the frontend locally.</p>
-      </div>
-      <div class="open-link-row">
-        <input type="url"
-               class="open-link-inp"
-               id="openLinkInp"
-               placeholder="https://…/?p=…#secret"
-               autocomplete="off"
-               spellcheck="false"
-               inputmode="url"
-               aria-label="Shared note link">
-        <button class="btn-sm sk" id="openLinkBtn" data-i18n="COMPOSE_OPEN_BTN">open</button>
-      </div>
-      <p class="status-msg open-link-msg" id="openLinkMsg" aria-live="polite"></p>
-    </div>
-
-    <div class="compose-meta">
-      <div class="tagline">
-        <span>e2ee</span><span>·</span><span data-i18n="COMPOSE_TAG_BURN">burn after read</span><span>·</span><span data-i18n="COMPOSE_TAG_RAM">RAM only</span>
-      </div>
-      <p class="pp-line">
-        <span data-i18n="COMPOSE_PP_PREFIX">by sending you accept our</span>
-        <button type="button" class="pp-link" id="ppBtnCompose" data-i18n="COMPOSE_PP_LINK">privacy policy &amp; terms of service</button>
-      </p>
-    </div>
-
-  </div>
-</main>
-
-<!-- ══════════════════════════════════════
-     HOW IT WORKS — visible on compose only
-══════════════════════════════════════ -->
-<section class="how-section" id="howSection" aria-label="How it works">
-  <div class="how-inner">
-
-    <div class="how-head">
-      <h2 class="h2" data-i18n="HOW_SIMPLE_TITLE">how it works</h2>
-      <svg class="squig" width="140" height="10" viewBox="0 0 140 10" aria-hidden="true">
-        <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5 Q90,1 100,5 Q110,9 120,5 Q130,1 140,5"
-              fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-      </svg>
-    </div>
-
-    <!-- Tab switcher -->
-    <div class="how-tabs" role="tablist" aria-label="Description level">
-      <button class="how-tab active sk" id="tabSimple"
-              role="tab" aria-selected="true" aria-controls="panelSimple" data-i18n="HOW_TAB_SIMPLE">for everyone</button>
-      <button class="how-tab sk" id="tabTech"
-              role="tab" aria-selected="false" aria-controls="panelTech" data-i18n="HOW_TAB_TECH">technical</button>
-    </div>
-
-    <!-- Plain-language panel -->
-    <div class="how-panel" id="panelSimple" role="tabpanel" aria-labelledby="tabSimple">
-      <ol class="how-steps">
-        <li class="how-step">
-          <span class="step-num mono" aria-hidden="true">01</span>
-          <div class="step-body">
-            <strong data-i18n="HOW_SIMPLE_1_T">write your message</strong>
-            <p data-i18n="HOW_SIMPLE_1_D">type whatever you want to share — a password, a private link, a secret note. no account, no sign-up.</p>
-          </div>
-        </li>
-        <li class="how-step">
-          <span class="step-num mono" aria-hidden="true">02</span>
-          <div class="step-body">
-            <strong data-i18n="HOW_SIMPLE_2_T">get a one-time link</strong>
-            <p data-i18n="HOW_SIMPLE_2_D">your browser scrambles the text locally and gives you a unique link to copy. the server never sees your original message, and it never receives the secret part after <code>#</code>.</p>
-          </div>
-        </li>
-        <li class="how-step">
-          <span class="step-num mono" aria-hidden="true">03</span>
-          <div class="step-body">
-            <strong data-i18n="HOW_SIMPLE_3_T">share it with one person</strong>
-            <p data-i18n="HOW_SIMPLE_3_D">send the full link however you like — chat, email, SMS. without everything after <code>#</code>, nobody can decrypt it. the privacy promise is the same basic idea as secure messengers like Signal: only the device with the key can unlock the message.</p>
-          </div>
-        </li>
-        <li class="how-step">
-          <span class="step-num mono" aria-hidden="true">04</span>
-          <div class="step-body">
-            <strong data-i18n="HOW_SIMPLE_4_T">it self-destructs on read</strong>
-            <p data-i18n="HOW_SIMPLE_4_D">the moment they open it, the note is deleted from the server forever. it can never be read a second time — not even by us.</p>
-          </div>
-        </li>
-      </ol>
-    </div>
-
-    <!-- Technical panel -->
-    <div class="how-panel hidden" id="panelTech" role="tabpanel" aria-labelledby="tabTech">
-      <ul class="tech-list">
-        <li class="tech-item">
-          <span class="tech-badge sk">AES-256-GCM</span>
-          <p data-i18n-html="HOW_TECH_1">browser-side encryption via the native <code>WebCrypto</code> API. every note gets a fresh 256-bit AES key. that is a 256-bit classical key space and roughly a 128-bit brute-force margin even against known quantum search attacks. authenticated encryption prevents tampering.</p>
-        </li>
-        <li class="tech-item">
-          <span class="tech-badge sk">zero-knowledge</span>
-          <p data-i18n-html="HOW_TECH_2">the decryption key lives in the URL <code>#fragment</code> — browsers never include the fragment in HTTP requests. the server receives only the encrypted blob and a note ID, so it is technically incapable of reading the plaintext. this is the same end-to-end idea Signal uses, although this app is a one-time-link design rather than a chat protocol.</p>
-        </li>
-        <li class="tech-item">
-          <span class="tech-badge sk">256 + 128 bits</span>
-          <p data-i18n-html=”HOW_TECH_BITS”>the secret or “password” part after <code>#</code> is a random 256-bit key. the shared URL also carries a separate 128-bit note ID in <code>?p=</code>. together the full URL contains 384 bits of identifiers, but only the 256-bit fragment is confidential and required for decryption.</p>
-        </li>
-        <li class="tech-item">
-          <span class="tech-badge sk">RAM-only</span>
-          <p data-i18n-html="HOW_TECH_3">blobs are stored in process memory. no database writes, no disk persistence. a server restart silently drops all notes, by design.</p>
-        </li>
-        <li class="tech-item">
-          <span class="tech-badge sk">PoW anti-spam</span>
-          <p data-i18n-html="HOW_TECH_4">each create request requires a SHA-256 proof-of-work computed in the browser. the target difficulty is set by the server and prevents bulk note creation without increasing latency for honest users.</p>
-        </li>
-        <li class="tech-item">
-          <span class="tech-badge sk">atomic read+delete</span>
-          <p data-i18n="HOW_TECH_5">the server atomically fetches and removes the blob in a single operation — no TOCTOU window. a 404 on fetch is authoritative proof the note is gone.</p>
-        </li>
-        <li class="tech-item">
-          <span class="tech-badge sk">self-hostable</span>
-          <p data-i18n-html="HOW_TECH_SELFHOST">the frontend is a single static HTML file. if you host it on the same domain as the backend, it uses that API automatically. use <code>?api=https://your-host</code> only for a local copy or a separate frontend host.</p>
-        </li>
-      </ul>
-    </div>
-
-    <!-- Run locally -->
-    <div class="local-row">
-      <a class="btn-local sk" id="localBtn"
-         href="https://github.com/pwn-all/secure-notes/releases/latest/download/frontend.zip"
-         target="_blank"
-         rel="noopener noreferrer"
-         title="Download the latest frontend zip from GitHub releases">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"
-             stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
-             aria-hidden="true">
-          <path d="M8 2v9M4 8l4 5 4-5"/>
-          <path d="M2 14h12"/>
-        </svg>
-        <span data-i18n="HOW_RUN_LOCAL_BTN">run it locally</span>
-      </a>
-      <p class="local-hint mono" data-i18n-html="HOW_RUN_LOCAL_HINT">
-        download the frontend zip and open it in any browser.
-        point it at your own server with <code>?api=https://your-host</code>.
-        the encryption key never leaves your device.
-      </p>
-    </div>
-
-  </div>
-</section>
-
-<!-- ══════════════════════════════════════
-     SCREEN: Link generated
-══════════════════════════════════════ -->
-<main class="screen hidden" id="sLink">
-  <div class="col">
-
-    <div class="title-stack">
-      <h1 class="h1" data-i18n="LINK_TITLE">your link is ready ✓</h1>
-      <svg class="squig" width="220" height="10" viewBox="0 0 220 10" aria-hidden="true">
-        <path d="M0,5 Q11,1 22,5 Q33,9 44,5 Q55,1 66,5 Q77,9 88,5
-                 Q99,1 110,5 Q121,9 132,5 Q143,1 154,5 Q165,9 176,5 Q187,1 198,5 Q209,9 220,5"
-              fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-      </svg>
-    </div>
-
-    <p class="sub">
-      <span data-i18n="LINK_SUB_PREFIX">copy and send it. opens once. expires in</span> <span id="ttlLbl">24h</span>. <span data-i18n="LINK_SUB_SUFFIX">then it's gone forever.</span>
+    </form>
+    <p class="dock-hint">
+      <span data-i18n="COMPOSER_HINT">End-to-end encrypted · burns after reading</span>
+      <span aria-hidden="true">·</span>
+      <button type="button" class="link-btn" id="ppBtnCompose" data-i18n="PP_LINK">privacy &amp; terms</button>
     </p>
+  </footer>
+</div>
 
-    <div class="link-box sk">
-      <span class="link-url" id="linkUrl" aria-label="Note link"></span>
-      <button class="btn-sm sk" id="copyBtn" data-i18n="LINK_COPY_BTN">copy</button>
-    </div>
-
-    <div class="link-alt" id="localShareCard" hidden>
-      <div class="link-alt-head">
-        <span class="link-alt-title" data-i18n="LINK_LOCAL_TITLE">open with this local copy</span>
-        <span class="mono muted small" data-i18n="LINK_LOCAL_DEVICE">this device only</span>
-      </div>
-      <a class="link-alt-url" id="localLinkUrl" href="#"></a>
-    </div>
-
-    <p class="key-hint" data-i18n="LINK_KEY_HINT">↑ everything after <code class="key-fragment">#</code> is the key — never sent to server</p>
-
-    <div class="meta-row" role="list">
-      <span role="listitem" id="metaTtl">⏱ 24h</span>
-      <span role="listitem">🔥 1 read</span>
-      <span role="listitem">🔒 e2ee</span>
-      <span role="listitem" id="metaNid"></span>
-    </div>
-
-    <div class="link-acts">
-      <button class="btn btn-ghost sk" id="qrBtn" data-i18n="LINK_QR_BTN">show QR</button>
-      <button class="btn btn-ghost sk" id="newBtn" data-i18n="LINK_NEW_BTN">+ new note</button>
-    </div>
-
-    <div class="qr-wrap hidden" id="qrWrap" aria-label="QR code"></div>
-
-  </div>
-</main>
-
-<!-- ══════════════════════════════════════
-     SCREEN: Recipient gate
-══════════════════════════════════════ -->
-<main class="screen hidden" id="sGate">
-  <div class="col">
-
-    <h1 class="h1" data-i18n="GATE_TITLE">someone sent you a note</h1>
-    <svg class="squig" width="260" height="10" viewBox="0 0 260 10" aria-hidden="true">
-      <path d="M0,5 Q13,1 26,5 Q39,9 52,5 Q65,1 78,5 Q91,9 104,5
-               Q117,1 130,5 Q143,9 156,5 Q169,1 182,5 Q195,9 208,5 Q221,1 234,5 Q247,9 260,5"
-            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-    </svg>
-
-    <!-- Destruction warning card -->
-    <div class="warn-card sk" role="alert">
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
-           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
-           class="warn-card-icon" aria-hidden="true">
-        <path d="M10 2L18.5 17H1.5L10 2Z"/>
-        <line x1="10" y1="8" x2="10" y2="12"/>
-        <circle cx="10" cy="15" r=".8" fill="currentColor"/>
-      </svg>
-      <div class="warn-card-body">
-        <p>
-          <strong data-i18n="GATE_WARN_TITLE">reading this note will permanently destroy it.</strong>
-        </p>
-        <p class="warn-card-sub" data-i18n="GATE_WARN_SUB">
-          it can only be read <em>once</em>. as soon as you open it, the server deletes it immediately and it cannot be recovered.
-        </p>
-      </div>
-    </div>
-
-    <!-- Encrypted note locked box -->
-    <div class="hatch-box sk" role="img" aria-label="Encrypted note — contents hidden until revealed">
-      <div class="hatch-inner">
-        <svg width="52" height="52" viewBox="0 0 52 52" fill="none"
-             stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
-             opacity=".32" aria-hidden="true">
-          <!-- rough outer circle -->
-          <ellipse cx="26" cy="26" rx="23" ry="22.5"/>
-          <ellipse cx="26" cy="26" rx="23" ry="22.5" opacity=".5" transform="rotate(4 26 26)"/>
-          <!-- lock body (centred in circle) -->
-          <rect x="14" y="24" width="24" height="16" rx="2.5"/>
-          <path d="M18 24Q18 13 26 13Q34 13 34 24"/>
-          <circle cx="26" cy="32" r="2.2" fill="currentColor"/>
-        </svg>
-        <span class="mono muted small" data-i18n="GATE_LOCKED_LABEL">encrypted · one-time access</span>
-      </div>
-    </div>
-
-    <div class="gate-acts">
-      <button class="btn btn-danger sk" id="revealBtn" data-i18n="GATE_REVEAL_BTN">yes, read and destroy →</button>
-      <button class="btn btn-ghost sk" id="notYetBtn" data-i18n="GATE_CANCEL_BTN">not yet</button>
-    </div>
-
-    <p class="status-msg" id="gateMsg" aria-live="polite" aria-atomic="true"></p>
-
-  </div>
-</main>
-
-<!-- ══════════════════════════════════════
-     SCREEN: Reading note
-══════════════════════════════════════ -->
-<main class="screen hidden" id="sRead">
-  <div class="col">
-
-    <div class="read-head">
-      <h1 class="h2" data-i18n="READ_TITLE">here it is.</h1>
-      <span class="burn-timer" id="burnTimer" aria-live="polite"></span>
-    </div>
-    <svg class="squig" width="120" height="10" viewBox="0 0 120 10" aria-hidden="true">
-      <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5 Q90,1 100,5 Q110,9 120,5"
-            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-    </svg>
-
-    <div class="read-card sk">
-      <textarea id="noteOutput" readonly spellcheck="false" aria-label="Decrypted note content"></textarea>
-    </div>
-
-    <div class="read-acts">
-      <button class="btn btn-ghost sk" id="copyTxtBtn" data-i18n="READ_COPY_BTN">copy text</button>
-      <button class="btn-danger-ol sk" id="burnBtn" data-i18n="READ_BURN_BTN">burn now</button>
-      <div class="spacer"></div>
-      <button class="btn btn-accent sk" id="replyBtn" data-i18n="READ_REPLY_BTN">reply →</button>
-    </div>
-
-    <p class="mono muted small" data-i18n="READ_DESTROYED_HINT">
-      this note has been destroyed on the server. it lives only on this page until you close it.
-    </p>
-
-  </div>
-</main>
-
-<!-- ══════════════════════════════════════
-     SCREEN: Burned / already gone
-══════════════════════════════════════ -->
-<main class="screen hidden" id="sBurned">
-  <div class="col">
-
-    <h1 class="h1" data-i18n="BURNED_TITLE">already gone.</h1>
-    <svg class="squig" width="140" height="10" viewBox="0 0 140 10" aria-hidden="true">
-      <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5 Q90,1 100,5 Q110,9 120,5 Q130,1 140,5"
-            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-    </svg>
-
-    <p class="sub" data-i18n="BURNED_SUB">
-      this note was already read and destroyed. each note can only be opened once — after that it's gone from the server forever.
-    </p>
-
-    <!-- Destroyed box -->
-    <div class="hatch-box hatch-burned sk" role="img" aria-label="Note has been destroyed">
-      <div class="hatch-inner">
-        <!-- Broken circle icon -->
-        <svg width="48" height="48" viewBox="0 0 48 48" fill="none"
-             stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
-             opacity=".28" aria-hidden="true">
-          <path d="M6 24 A18 18 0 0 1 24 6"/>
-          <path d="M24 6 A18 18 0 0 1 42 24"/>
-          <path d="M42 24 A18 18 0 0 1 30 40"/>
-          <path d="M18 40 A18 18 0 0 1 6 24"/>
-          <line x1="22" y1="20" x2="26" y2="28"/>
-          <line x1="26" y1="20" x2="22" y2="28"/>
-        </svg>
-        <span class="h2 muted" data-i18n="BURNED_GONE_LABEL">this note no longer exists</span>
-        <span class="mono muted small" id="burnedId"></span>
-        <span class="mono muted small" data-i18n="BURNED_SELF_DESTRUCT">notes self-destruct immediately after the first read</span>
-      </div>
-    </div>
-
-    <button class="btn btn-ghost sk" id="sendOwnBtn" data-i18n="BURNED_NEW_BTN">send your own note →</button>
-
-  </div>
-</main>
-
-<!-- ══════════════════════════════════════
-     OVERLAY: Settings
-══════════════════════════════════════ -->
-<div class="overlay hidden" id="oSettings" role="dialog" aria-modal="true" aria-labelledby="settTitle">
-  <div class="settings-sheet sk">
-
-    <div class="sheet-head">
-      <h2 class="h2" id="settTitle" data-i18n="SETTINGS_TITLE">settings</h2>
-      <button class="esc-close" id="closeSettings" data-i18n="SETTINGS_CLOSE">esc · close</button>
-    </div>
-
-    <svg class="squig" width="120" height="10" viewBox="0 0 120 10" aria-hidden="true">
-      <path d="M0,5 Q10,1 20,5 Q30,9 40,5 Q50,1 60,5 Q70,9 80,5 Q90,1 100,5 Q110,9 120,5"
-            fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-    </svg>
-
-    <div class="field-block">
-      <label class="field-lbl" for="apiInp" data-i18n="SETTINGS_API_LABEL">api endpoint</label>
-      <p class="field-hint" data-i18n="SETTINGS_API_HINT">where notes are stored. use your own self-hosted instance, or the public one.</p>
-      <input type="url" class="url-inp" id="apiInp"
-             placeholder="https://…"
-             autocomplete="off" spellcheck="false">
-      <div class="api-status-row">
-        <button class="btn-sm" id="defaultBtn" data-i18n="SETTINGS_DEFAULT_BTN">use default API</button>
-        <div class="spacer"></div>
-        <div class="api-reach hidden" id="apiReach">
-          <span class="dot ok" id="reachDot" aria-hidden="true"></span>
-          <span id="reachLbl"></span>
-        </div>
-      </div>
-      <p class="field-hint" data-i18n="SETTINGS_OFFLINE_HINT">
-        this page works fully offline — open the .html locally and point it at any compatible server.
-      </p>
-    </div>
-
-    <div class="divider"></div>
-
-    <div class="field-block">
-      <label class="field-lbl">server info</label>
-      <div class="server-stat-grid">
-        <span class="server-stat-lbl">notes</span>
-        <span class="mono small" id="infoNotes">—</span>
-        <span class="server-stat-lbl">ram</span>
-        <span class="mono small" id="infoRam">—</span>
-        <span class="server-stat-lbl">pubkey</span>
-        <span class="mono small server-pubkey-val" id="infoPubKey">[[PUB_KEY]]</span>
-      </div>
-    </div>
-
-    <div class="divider"></div>
-
-    <div class="sheet-foot">
-      <button class="btn btn-accent sk" id="saveSettings" data-i18n="SETTINGS_SAVE">save</button>
-      <button class="btn btn-ghost sk" id="cancelSettings" data-i18n="SETTINGS_CANCEL">cancel</button>
-      <div class="spacer"></div>
-      <span class="mono muted small" data-i18n="SETTINGS_LOCAL_ONLY">stored locally only</span>
-    </div>
-
+<!-- ═════ Drag & drop ═════ -->
+<div class="drop-zone hidden" id="dropZone" aria-hidden="true">
+  <div class="drop-card">
+    <svg aria-hidden="true"><use href="#i-clip"/></svg>
+    <strong id="dropTitle" data-i18n="DROP_TITLE">Drop files to encrypt and attach</strong>
+    <span id="dropSub"></span>
   </div>
 </div>
 
+<!-- ═════ Settings drawer ═════ -->
+<div class="overlay overlay-drawer hidden" id="oSettings" role="dialog" aria-modal="true" aria-labelledby="settTitle">
+  <aside class="drawer">
+    <div class="drawer-head">
+      <h2 class="drawer-title" id="settTitle" data-i18n="SETTINGS_TITLE">Settings</h2>
+      <button type="button" class="icon-btn" id="closeSettings" aria-label="Close" data-i18n-aria="SETTINGS_CLOSE">
+        <svg aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+
+    <div class="drawer-body">
+      <section class="field">
+        <label class="field-lbl" for="langSelect" data-i18n="SETTINGS_LANG">Language</label>
+        <select class="select" id="langSelect">
+          <option value="en">English</option>
+          <option value="de">Deutsch</option>
+          <option value="es">Español</option>
+          <option value="fr">Français</option>
+          <option value="pt">Português</option>
+          <option value="ru">Русский</option>
+          <option value="ua">Українська</option>
+          <option value="ar">العربية</option>
+          <option value="bn">বাংলা</option>
+          <option value="cn">中文</option>
+          <option value="hi">हिन्दी</option>
+          <option value="ur">اردو</option>
+        </select>
+      </section>
+
+      <section class="field">
+        <span class="field-lbl" id="ttlLbl" data-i18n="SETTINGS_TTL">Link lifetime</span>
+        <div class="segmented" role="radiogroup" aria-labelledby="ttlLbl">
+          <label><input type="radio" name="ttl" value="43200" checked><span data-i18n="TTL_12">12 hours</span></label>
+          <label><input type="radio" name="ttl" value="86400"><span data-i18n="TTL_24">24 hours</span></label>
+        </div>
+      </section>
+
+      <section class="field">
+        <span class="field-lbl" id="serverLbl" data-i18n="SETTINGS_API_LABEL">Server</span>
+        <div class="server-card" id="serverCard" aria-labelledby="serverLbl">
+          <div class="server-head">
+            <span class="health-dot" id="serverDot" aria-hidden="true"></span>
+            <span class="server-host mono" id="serverHost">—</span>
+            <span class="server-badge" id="serverBadge"></span>
+          </div>
+          <div class="server-meta" id="serverMeta"></div>
+          <p class="server-hint" data-i18n="SETTINGS_API_HINT">Where encrypted notes are stored. Use this site or your own self-hosted instance.</p>
+          <button type="button" class="server-change" id="changeServerBtn" aria-expanded="false" aria-controls="serverForm">
+            <span data-i18n="SERVER_CHANGE">Change server</span>
+            <svg aria-hidden="true"><use href="#i-chevron"/></svg>
+          </button>
+          <div class="server-form" id="serverForm" hidden>
+            <label class="sr-only" for="apiInp" data-i18n="SETTINGS_API_LABEL">Server</label>
+            <input type="url" class="input" id="apiInp" placeholder="https://…" autocomplete="off" spellcheck="false" inputmode="url">
+            <p class="server-hint" data-i18n-html="SERVER_INPUT_HINT">HTTPS address of a SecNote server, for example <code>https://notes.example</code>. Append <code>|key</code> to pin its signing key.</p>
+            <span class="api-reach hidden" id="apiReach"><span class="health-dot" id="reachDot" aria-hidden="true"></span><span id="reachLbl"></span></span>
+            <div class="server-actions">
+              <button type="button" class="btn btn-accent btn-sm" id="saveSettings" data-i18n="SERVER_CONNECT">Connect</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="defaultBtn" data-i18n="SERVER_USE_SITE">Use this site</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="cancelSettings" data-i18n="SETTINGS_CANCEL">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="field">
+        <span class="field-lbl" data-i18n="SETTINGS_INFO">Server info</span>
+        <dl class="info-grid">
+          <dt data-i18n="INFO_NOTES">notes</dt><dd class="mono" id="infoNotes">—</dd>
+          <dt data-i18n="INFO_RAM">RAM</dt><dd class="mono" id="infoRam">—</dd>
+          <dt data-i18n="INFO_FILES">files</dt><dd class="mono" id="infoFiles">—</dd>
+          <dt data-i18n="INFO_UPTIME">uptime</dt><dd class="mono" id="infoUptime">—</dd>
+          <dt>ram-only</dt><dd class="mono" id="infoRamOnly">—</dd>
+          <dt data-i18n="INFO_BINARY">binary</dt><dd class="mono break" id="infoBinary">—</dd>
+          <dt data-i18n="INFO_PUBKEY">public key</dt><dd class="mono break" id="infoPubKey">—</dd>
+        </dl>
+      </section>
+
+    </div>
+
+    <div class="drawer-foot">
+      <a class="link-btn" href="https://github.com/pwn-all/secure-notes" target="_blank" rel="noopener noreferrer" data-i18n="LINK_SOURCE">source code</a>
+      <a class="link-btn" id="localBtn" href="https://github.com/pwn-all/secure-notes/releases/latest/download/frontend.zip" target="_blank" rel="noopener noreferrer" data-i18n="LINK_LOCAL">download for offline use</a>
+    </div>
+  </aside>
+</div>
 <!-- ══════════════════════════════════════
      OVERLAY: Privacy Policy & Terms of Service
 ══════════════════════════════════════ -->
@@ -741,6 +391,7 @@
 
       <h3>2. Description of Service</h3>
       <p>SecNote provides a zero-knowledge, end-to-end encrypted, one-time message relay hosted at <strong>[[HOST_URL]]/</strong>. Notes are encrypted client-side in your browser using AES-256-GCM before being transmitted. The decryption key exists only in the URL fragment (<code>#</code>) and is never sent to our servers. Notes are stored exclusively in server RAM and are permanently deleted after the first read or when the TTL expires. The Service is provided free of charge with no guarantee of uptime or availability.</p>
+      <p>Where the Operator enables it, a note may also carry <strong>file attachments</strong> up to a size limit set by the Operator. Attachments are packed together with the note text and encrypted in your browser in the same AES-256-GCM ciphertext, so the Operator sees only the total encrypted size; they are stored, deleted and expired exactly like text notes.</p>
       <p>The Service additionally supports <strong>cross-instance retrieval</strong>: the frontend may be used to retrieve and decrypt notes whose encrypted ciphertext is stored on a third-party SecNote-compatible server (any server other than <code>[[HOST]]</code>). In such cases, your browser connects to that server to create or retrieve the note, and its availability, retention behavior, and configuration depend on that server's operator.</p>
 
       <h3>3. User Content</h3>
@@ -923,9 +574,101 @@
 </div>
 
 <!-- ══════════════════════════════════════
-     APP SCRIPT
+     /faq: animated explainer (cloned by app.js, positions driven per scene)
 ══════════════════════════════════════ -->
+<template id="tplExplainer">
+  <svg class="ex-stage" viewBox="0 0 640 300" aria-hidden="true" focusable="false">
+    <path class="ex-line ex-line-a" d="M180 140 H248"/>
+    <path class="ex-line ex-line-b" d="M392 140 H460"/>
+    <path class="ex-line ex-line-share" d="M180 262 C 262 300, 378 300, 460 262"/>
+    <g class="ex-nosend">
+      <path class="ex-nosend-path" d="M150 248 C 190 236, 236 232, 268 226"/>
+      <path class="ex-nosend-x" d="M204 229 l9 9 M213 229 l-9 9"/>
+    </g>
+
+    <g class="ex-actor ex-sender">
+      <rect class="ex-dev" x="36" y="34" width="144" height="204" rx="20"/>
+      <circle class="ex-dev-dot" cx="57" cy="55" r="6"/>
+      <rect class="ex-dev-bar" x="70" y="51" width="52" height="8" rx="4"/>
+      <rect class="ex-bubble" x="52" y="76" width="112" height="38" rx="13"/>
+      <g class="ex-actor ex-plain"><text class="ex-mono" x="68" y="100"><tspan class="ex-ch">p</tspan><tspan class="ex-ch">@</tspan><tspan class="ex-ch">s</tspan><tspan class="ex-ch">s</tspan><tspan class="ex-ch">w</tspan><tspan class="ex-ch">0</tspan><tspan class="ex-ch">r</tspan><tspan class="ex-ch">d</tspan></text></g>
+      <g class="ex-actor ex-cipher"><text class="ex-mono ex-cipher-text" x="68" y="100">x9#Qf!2z</text></g>
+      <g class="ex-actor ex-lockbadge"><circle class="ex-badge" cx="164" cy="78" r="11"/><use class="ex-badge-icon" href="#i-lock" x="157" y="71" width="14" height="14"/></g>
+      <g class="ex-actor ex-pow">
+        <rect class="ex-tile" x="56" y="132" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="75" y="132" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="94" y="132" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="113" y="132" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="56" y="151" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="75" y="151" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="94" y="151" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="113" y="151" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="56" y="170" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="75" y="170" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="94" y="170" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="113" y="170" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="56" y="189" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="75" y="189" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="94" y="189" width="14" height="14" rx="4"/>
+        <rect class="ex-tile" x="113" y="189" width="14" height="14" rx="4"/>
+        <g class="ex-check"><circle cx="152" cy="139" r="8"/><use href="#i-check" x="146" y="133" width="12" height="12"/></g>
+        <g class="ex-check"><circle cx="152" cy="158" r="8"/><use href="#i-check" x="146" y="152" width="12" height="12"/></g>
+        <g class="ex-check"><circle cx="152" cy="177" r="8"/><use href="#i-check" x="146" y="171" width="12" height="12"/></g>
+        <g class="ex-check"><circle cx="152" cy="196" r="8"/><use href="#i-check" x="146" y="190" width="12" height="12"/></g>
+        <text class="ex-tiny" x="56" y="226">Argon2id</text>
+      </g>
+    </g>
+
+    <g class="ex-actor ex-server">
+      <rect class="ex-dev" x="248" y="44" width="144" height="184" rx="20"/>
+      <circle class="ex-led ex-led-1" cx="268" cy="64" r="3.5"/>
+      <circle class="ex-led ex-led-2" cx="280" cy="64" r="3.5"/>
+      <circle class="ex-led ex-led-3" cx="292" cy="64" r="3.5"/>
+      <text class="ex-tiny" x="374" y="68" text-anchor="end">RAM</text>
+      <rect class="ex-slot" x="284" y="118" width="72" height="46" rx="12"/>
+      <text class="ex-gone" x="320" y="148" text-anchor="middle">410</text>
+      <text class="ex-tiny ex-sig" x="320" y="206" text-anchor="middle">Ed25519 ✓</text>
+      <g class="ex-clock"><use href="#i-clock" x="282" y="194" width="16" height="16"/><text class="ex-tiny" x="303" y="206">12h · 24h</text></g>
+    </g>
+
+    <g class="ex-actor ex-recipient">
+      <rect class="ex-dev" x="460" y="34" width="144" height="204" rx="20"/>
+      <circle class="ex-dev-dot" cx="481" cy="55" r="6"/>
+      <rect class="ex-dev-bar" x="494" y="51" width="52" height="8" rx="4"/>
+      <rect class="ex-bubble ex-rbubble" x="476" y="76" width="112" height="38" rx="13"/>
+      <g class="ex-rplain"><text class="ex-mono" x="492" y="100">p@ssw0rd</text></g>
+      <g class="ex-unlock"><circle class="ex-badge ex-badge-ok" cx="588" cy="78" r="11"/><use class="ex-badge-icon" href="#i-check" x="581" y="71" width="14" height="14"/></g>
+    </g>
+
+    <g class="ex-actor ex-key">
+      <circle class="ex-key-ring" cx="198" cy="72" r="8"/>
+      <path class="ex-key-shaft" d="M206 72 H228 M221 72 v6 M226 72 v4"/>
+    </g>
+
+    <g class="ex-actor ex-pkg">
+      <rect class="ex-pkg-bg" x="86" y="80" width="44" height="30" rx="9"/>
+      <use class="ex-pkg-icon" href="#i-lock" x="100" y="87" width="16" height="16"/>
+    </g>
+
+    <!-- scene 6: the friend sends only the id (?p=) to the server, then uses the key after # -->
+    <g class="ex-idchip">
+      <rect class="ex-id-bg" x="446" y="129" width="60" height="22" rx="11"/>
+      <text class="ex-mono-sm ex-id-text" x="455" y="144">?p=k3F…</text>
+    </g>
+    <g class="ex-key2">
+      <circle class="ex-key-ring" cx="532" cy="262" r="6"/>
+      <path class="ex-key-shaft" d="M538 262 H553 M548 262 v5 M552 262 v3"/>
+    </g>
+
+    <g class="ex-actor ex-link">
+      <rect class="ex-link-bg" x="30" y="248" width="150" height="28" rx="14"/>
+      <text class="ex-mono-sm" x="44" y="266">/?p=k3Fz…<tspan class="ex-hash">#Xk9q…</tspan></text>
+    </g>
+  </svg>
+</template>
+
 <script src="qrcode.min.js" defer></script>
+<script src="argon2.js" defer></script>
 <script src="app-config.js" defer></script>
 <script src="app.js" defer></script>
 <script src="sw-register.js" defer></script>

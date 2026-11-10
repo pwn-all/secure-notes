@@ -28,6 +28,8 @@ See [the security review](docs/security-review.ru.md) for findings, fixes, OWASP
 3. The key lives in the URL `#fragment`, which browsers never include in HTTP requests.
 4. The note is atomically deleted on the first read (or when its TTL expires / the process restarts).
 
+The interface is a chat. Type a secret into the composer at the bottom and press Enter (Shift+Enter adds a line). The service answers like a chat partner: while it "types", the status line shows *Checking that you are not a robot…* (the browser solves the Argon2id proof-of-work), *You are not a robot*, *Handing you the link…*, and then it replies with the one-time link, a copy button and a QR code; the sent secret is blurred in the conversation. When the operator enables attachments (`MAX_FILE_BYTES`), the paperclip and drag & drop add files that are encrypted together with the text. A recipient who opens a link gets the same chat with a *Read and destroy* prompt. The top-right corner shows a server health signal and a gear for settings (language, link lifetime, server, signed server info). Commands: `/faq` plays an animated seven-scene explainer of the whole flow (plain-language captions plus a technical line, in the user's language; the PoW figures come from the server's live parameters), `/help` lists commands, `/clear` wipes the conversation from the screen, `/open <link>` opens a received link with this copy of the page. Pasting a bare SecNote link (`https://…/?p=…&pin=…#key`, from this or another server) and pressing Enter opens it the same way instead of encrypting it; a link from another server goes through the external-server warning and the pinned-key check, and once its note is handled the chat offers to switch new notes back to the user's own server.
+
 ## Offline / Tor Browser use
 
 The entire frontend is plain HTML + JS + CSS with no build step, no CDN dependencies, and no server-side rendering. You can:
@@ -45,13 +47,15 @@ No apps to install, no packages to build, no runtime to configure. Works in air-
 |---|---|
 | Zero-knowledge server | Stores `nid`, `blob`, a hash of the read token, and expiry — never the AES key when using a trusted frontend |
 | Burn protection | Reading requires `view_token = SHA-256(aes_key)`; knowing only `nid` is not enough |
-| Payload-bound PoW | `SHA-256(challenge ‖ nonce ‖ SHA-256(ttl ‖ blob))` — challenge can't be reused for a different payload |
-| One-time challenge | Both challenge and note are consumed atomically |
+| Memory-hard, payload-bound PoW | Argon2id (RFC 9106, 4 MiB per evaluation) over each 8-byte `nonce` chunk with salt `SHA-256(domain ‖ challenge ‖ SHA-256(ttl ‖ blob))`; `rounds` distinct solutions per request; pure-JS client without WebAssembly. There is no other scheme and no fallback. See [docs/pow-spec.md](docs/pow-spec.md) |
+| One-time challenge | A challenge is removed before its proof is verified (one challenge = at most one Argon2id verification, a rejected proof burns it); notes are consumed atomically on read |
+| Optional encrypted files | With `MAX_FILE_BYTES` > 0, files are packed into the same AES-256-GCM blob in the browser; the server only enforces sizes and never sees names, types or contents |
 | IP privacy | Anti-abuse state keyed on `SHA-256(IP ‖ server_salt)`; raw IPs never stored |
 | Ephemeral salt | `server_salt` is random per process start; all anti-abuse state lost on restart |
 | Authenticated API responses | Ed25519 signatures bind response bytes, status, method, path/query, request body hash, and a fresh client nonce; protection requires a trusted frontend and signing key |
 | Strict CSP | `default-src 'none'` with minimal allowlist |
 | Offline shell | Service worker caches allowlisted public assets using URLs without queries; API calls always bypass the cache |
+| RAM-only hardening | Core dumps disabled, process non-dumpable, memory pinned with `mlockall` when the memlock limit allows, stored ciphertext zeroized on read/expiry (defense in depth). The signed `/info` carries a self-reported instance passport (binary SHA-256, uptime, these flags) — transparency, not attestation. See [docs/ram-only.md](docs/ram-only.md) |
 
 ---
 
@@ -68,7 +72,7 @@ No apps to install, no packages to build, no runtime to configure. Works in air-
 | **Zero-knowledge server** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Burn after read** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Authenticated API responses** | ✅ Ed25519 per-response | ❌ | ❌ | ❌ | ❌ |
-| **Anti-spam / bot protection** | ✅ Proof-of-Work | ⚠️ CAPTCHA opt-in | ❌ | ❌ | ❌ |
+| **Anti-spam / bot protection** | ✅ Memory-hard PoW (Argon2id) | ⚠️ CAPTCHA opt-in | ❌ | ❌ | ❌ |
 | **Burn-read protection¹** | ✅ `view_token` | ❌ | ❌ | ❌ | ❌ |
 | **IP privacy by design** | ✅ Hashed | ❌ Raw IPs | ❌ Raw IPs | ❌ Raw IPs | ❌ Raw IPs |
 | **Built-in TLS** | ✅ Rustls | ❌ Web server | ❌ Proxy | ❌ Proxy | ❌ Proxy |
@@ -181,6 +185,8 @@ docker run -d \
 
 Notes hold no state outside the process — there is no data volume to mount. Restarting the container clears all notes (by design).
 
+To let the server pin its memory so note ciphertext can never reach swap, give the container an unlimited memlock limit: `docker run --ulimit memlock=-1:-1 …`. The entrypoint drops `CAP_IPC_LOCK`, so the rlimit is the only way `mlockall` can succeed; without it the server runs unlocked and says so in `/info` (`memory_locked: false`). Pinned memory cannot be swapped, so size the container memory limit for the note store plus request buffers (see `MAX_FILE_BYTES`).
+
 For an explicitly nonroot container, mount certificate/key files readable by that user and select high listener ports. In that mode the entrypoint uses the supplied files directly; update them and send SIGHUP to the server after renewal.
 
 ## Environment variables
@@ -195,12 +201,20 @@ The defaults support startup when the default TLS files exist. Production should
 | `TLS_CERT_PATH` | `/etc/letsencrypt/live/localhost/fullchain.pem` | TLS certificate chain |
 | `TLS_KEY_PATH` | `/etc/letsencrypt/live/localhost/privkey.pem` | TLS private key |
 | `CHALLENGE_TTL_SECS` | `150` | PoW challenge lifetime |
-| `POW_BITS_CREATE` | `17` | Base PoW difficulty for note creation (alias: `POW_BITS`) |
-| `POW_BITS_CREATE_MAX` | `28` | Max PoW difficulty under load (alias: `POW_BITS_MAX`) |
-| `POW_BITS_VIEW` | `16` | Base PoW difficulty for note reading |
-| `POW_BITS_VIEW_MAX` | `24` | Max PoW difficulty for reading under load |
-| `MAX_PLAINTEXT_BYTES` | `32768` | Maximum plaintext size, clamped to 1–32768 UTF-8 bytes |
-| `MAX_BLOB_BYTES` | `49152` | Maximum base64url-encoded blob size, clamped to 39–49152 bytes |
+| `POW_BITS_CREATE` | `4` | Base difficulty for note creation, in leading zero bits per Argon2id solution, 1–12 (alias: `POW_BITS`) |
+| `POW_BITS_CREATE_MAX` | `7` | Max creation difficulty under load, up to 12 (alias: `POW_BITS_MAX`) |
+| `POW_BITS_VIEW` | `3` | Base difficulty for note reading, 1–12 |
+| `POW_BITS_VIEW_MAX` | `5` | Max reading difficulty under load, up to 12 |
+| `POW_ROUNDS_CREATE` | `4` | Distinct solutions required per create request (1–16); expected work is `rounds × 2^bits` evaluations |
+| `POW_ROUNDS_VIEW` | `2` | Distinct solutions required per read request (1–16) |
+| `POW_ARGON2_M_KIB` | `4096` | Argon2id memory per evaluation in KiB (256–65536); the client allocates the same amount |
+| `POW_ARGON2_T` | `1` | Argon2id passes per evaluation (1–8) |
+| `POW_VERIFY_CONCURRENCY` | CPU count | Argon2id verifications running at once (1–64); bounds verifier RAM to this × `POW_ARGON2_M_KIB` |
+| `MAX_PLAINTEXT_BYTES` | `32768` | Maximum text size, clamped to 1–32768 UTF-8 bytes |
+| `MAX_BLOB_BYTES` | `49152` | Maximum base64url-encoded blob size for text notes, clamped to 39–49152 bytes |
+| `MAX_FILE_BYTES` | `0` | Total size of encrypted file attachments per note, 0–67108864 (64 MiB); `0` disables uploads. When set, the accepted blob grows to `base64url(12 + 16 + MAX_PLAINTEXT_BYTES + 16384 + MAX_FILE_BYTES)` |
+| `UPLOAD_TIMEOUT_SECS` | `120` | Body read and handler deadline for API requests while `MAX_FILE_BYTES` > 0 (10–600); otherwise 10 seconds |
+| `PUBLISH_PASSPORT` | `1` | Include the instance passport (version, start time, binary SHA-256, hardening flags) in the signed `/info` response; `0` omits it |
 | `MAX_NOTE_STORAGE_BYTES` | `67108864` | Total stored encoded ciphertext budget (64 MiB); excludes map overhead, TLS, and request buffers |
 | `MAX_NOTES` | `50000` | Maximum active notes |
 | `MAX_ACTIVE_CHALLENGES` | `10000` | Maximum active PoW challenges |
@@ -216,9 +230,13 @@ The defaults support startup when the default TLS files exist. Production should
 | `RATE_CREATE_PER_MIN` | `30` | Note creation rate limit per IP |
 | `RATE_VIEW_PER_MIN` | `60` | Note reading rate limit per IP |
 
+`POW_ALG` no longer exists as a switch: the server refuses to start if it is set to anything but `argon2id`, and if any `POW_BITS*` value exceeds 12 (an old SHA-256 difficulty such as 17 would mean hours of Argon2id work per note).
+
+**File uploads and memory.** Notes live in RAM, so `MAX_FILE_BYTES` is a memory decision. `MAX_NOTE_STORAGE_BYTES` caps the stored total (the server warns at startup if it is smaller than one maximum-size note). Request handling buffers each body and signed response, so peak transient memory is roughly `MAX_CONCURRENT_API_REQUESTS × 3 × max_blob_bytes` on top of stored notes — about 17 GiB for 64 requests at the 64 MiB maximum. Lower `MAX_CONCURRENT_API_REQUESTS` or the file limit accordingly, and remember that with memory pinned (`--ulimit memlock=-1:-1`) none of it can be swapped out.
+
 ## API
 
-Base URL is the server's own origin; no API key required. All write operations require a solved PoW challenge.
+Base URL is the server's own origin; no API key required. Creating and reading notes require a solved proof-of-work challenge. The protocol, its parameters and test vectors are specified in [docs/pow-spec.md](docs/pow-spec.md).
 
 ### Response signing
 
@@ -239,7 +257,7 @@ secnote-response-v2
 <decimal HTTP status>
 ```
 
-Use the SHA-256 of an empty body for a bodyless request. A client must compare the signature with its own request context and a new nonce for every request. The official frontend verifies the raw bytes before decoding JSON. It rejects missing/invalid v2 signatures and never falls back to the legacy signature. Request bodies and handler execution each have a 10-second deadline. Overload, invalid request IDs, and failures while reading the request body are rejected before a complete signing context exists; these early errors may be unsigned and are treated as untrusted failures by the official client.
+Use the SHA-256 of an empty body for a bodyless request. A client must compare the signature with its own request context and a new nonce for every request. The official frontend verifies the raw bytes before decoding JSON. It rejects missing/invalid v2 signatures and never falls back to the legacy signature. Request bodies and handler execution each have a 10-second deadline (`UPLOAD_TIMEOUT_SECS` when file uploads are enabled). Overload, invalid request IDs, and failures while reading the request body are rejected before a complete signing context exists; these early errors may be unsigned and are treated as untrusted failures by the official client.
 
 The legacy header is retained for API compatibility; it authenticates **only the body** and provides no replay or request-context protection:
 
@@ -270,7 +288,7 @@ Store the seed in a private `.env` or secret store as `SIGNING_KEY`. Do not comm
 
 ### `GET /api/v1/init?scope=create|view`
 
-Returns a PoW challenge, encryption parameters, and server limits.
+Returns a proof-of-work challenge, encryption parameters, and server limits.
 
 ```json
 {
@@ -278,15 +296,21 @@ Returns a PoW challenge, encryption parameters, and server limits.
   "server_time": 1700000000,
   "pow": {
     "scope": "create",
-    "alg": "sha256-leading-zero-bits",
-    "bits": 22,
+    "alg": "argon2id-leading-zero-bits",
+    "bits": 4,
+    "rounds": 4,
+    "params": { "m_kib": 4096, "t": 1, "p": 1, "tag_bytes": 32, "nonce_bytes": 8 },
     "expires_at": 1700000150,
     "challenge": "<base64url>"
   },
   "encryption": { "alg": "aes-256-gcm", "key_bytes": 32, "nonce_bytes": 12, "tag_bytes": 16 },
-  "limits": { "max_plaintext_bytes": 32768, "max_blob_bytes": 49152, "ttls": [43200, 86400] }
+  "limits": { "max_plaintext_bytes": 32768, "max_blob_bytes": 49152, "max_file_bytes": 0, "ttls": [43200, 86400] }
 }
 ```
+
+`nonce` is `rounds × 8` bytes: each 8-byte chunk must be a distinct solution with `bits` leading zero bits in `Argon2id(P = chunk, S = SHA-256("secnote-pow-argon2id-v1" ‖ challenge ‖ payload_hash), m = m_kib, t, p = 1, T = 32)`. The create payload hash is `SHA-256(ttl_be64 ‖ blob)`; reading uses `SHA-256("view:" ‖ nid)`. `alg` is always `argon2id-leading-zero-bits`; a client must reject anything else.
+
+`limits.max_plaintext_bytes` is the text limit. `limits.max_file_bytes` is `0` when file uploads are disabled; otherwise it is the total attachment budget and `max_blob_bytes` grows to fit it. Files travel inside the encrypted blob: the official client encrypts the envelope `00 53 4E 46 01` ‖ `u32_be(header_len)` ‖ header JSON `{"v":1,"text":<text bytes>,"files":[{"name","type","size"}]}` ‖ text ‖ file bytes, with 16384 bytes reserved for magic, length and header. Text-only notes remain raw UTF-8. The server never parses either form.
 
 ### `POST /api/v1/notes`
 
@@ -294,7 +318,7 @@ Returns a PoW challenge, encryption parameters, and server limits.
 {
   "alg": "aes-256-gcm",
   "challenge": "<base64url>",
-  "nonce": "<base64url(pow_nonce)>",
+  "nonce": "<base64url(rounds × 8-byte solutions)>",
   "ttl": 43200,
   "blob": "<base64url(iv ‖ ciphertext ‖ tag)>",
   "view_token": "<base64url(SHA-256(aes_key_bytes))>"
@@ -308,7 +332,7 @@ Response: `{ "ok": true, "nid": "<base64url>", "expires_at": 1700086400 }`
 ```json
 {
   "challenge": "<base64url>",
-  "nonce": "<base64url(pow_nonce)>",
+  "nonce": "<base64url(rounds × 8-byte solutions)>",
   "view_token": "<base64url(SHA-256(aes_key_bytes))>"
 }
 ```
@@ -318,7 +342,19 @@ Gone/expired: `410` with `{ "ok": false, "error": { "code": "gone", "message": "
 
 ### `GET /info`
 
-`{ "ok": true, "notes": 42, "ram_usage": "2 mb", "pubkey": "<base64url>" }` — anonymous aggregate plus the server's Ed25519 public key. The client fetches this endpoint on first connect to obtain the key for signature verification (see [Public key trust model](#public-key-trust-model) above).
+```json
+{
+  "ok": true, "notes": 42, "ram_usage": "2 mb", "pubkey": "<base64url>", "max_file_bytes": 0,
+  "passport": {
+    "version": "0.1.0", "started_at": 1762560000, "uptime_secs": 86400,
+    "binary_sha256": "<hex>",
+    "ram_only": { "dumpable": false, "core_dump_limit_zero": true, "memory_locked": false,
+                  "memory_lock_detail": "RLIMIT_MEMLOCK is finite; …", "swap_present": false, "zeroize_on_drop": true }
+  }
+}
+```
+
+Anonymous aggregate, the server's Ed25519 public key, the file attachment budget, and the instance passport (omitted with `PUBLISH_PASSPORT=0`). The client fetches this endpoint on first connect to obtain the key for signature verification (see [Public key trust model](#public-key-trust-model) above). The passport is self-reported by the process: the signature shows it was not altered in transit, not that the operator runs an unmodified binary — see [docs/ram-only.md](docs/ram-only.md).
 
 ## Frontend
 
@@ -326,14 +362,15 @@ Static files served from `website/`. The Rust backend handles only `/api/v1/*`, 
 
 | File | Purpose |
 |---|---|
-| `index.html` | App shell |
+| `index.html` | App shell: chat log, composer, settings drawer, privacy policy and trust dialogs |
 | `app-config.js` | Empty runtime config — API URL auto-detects from `location.origin` |
-| `app.js` | Client logic: encryption, PoW, i18n, privacy policy rendering |
-| `pow-worker.js` | PoW solver (Web Worker) |
+| `app.js` | Client logic: chat UI and commands, encryption (text and the `\0SNF` file envelope), PoW, signature checks, key pinning, i18n |
+| `pow-worker.js` | Argon2id proof-of-work solver (Web Worker) |
+| `argon2.js` | Argon2id / BLAKE2b in plain JavaScript (RFC 9106, no WebAssembly); used by the worker and the file:// fallback |
 | `styles.css` | Styles |
 | `sw.js` | Service worker (offline shell cache) |
 | `manifest.json` | PWA manifest |
-| `langs/*.json` | UI translations (12 languages) |
+| `langs/*.json` | UI translations (12 languages); the language follows the browser unless chosen in settings, and English is built into `app.js` for offline use |
 
 The frontend auto-connects to the API at its own origin — no configuration needed. Use `?api=https://other-host` to point at a different backend.
 
@@ -360,7 +397,7 @@ cargo build --release --locked
 node tests/runtime-smoke.cjs --binary target/release/secure_notes
 ```
 
-The runtime smoke uses isolated temporary certificates and a test signing seed. It checks real TLS/HTTP2, signed API operations, burn protection, live certificate reload, and the incomplete-header deadline. It requires Node.js with WebCrypto, OpenSSL, and permission to bind local test ports.
+The runtime smoke uses isolated temporary certificates and a test signing seed. It checks real TLS/HTTP2, Argon2id proof-of-work solved with the frontend implementation, signed API operations, burn protection, file-budget limits, the instance passport against the binary under test, live certificate reload, and the incomplete-header deadline. It requires Node.js with WebCrypto, OpenSSL, and permission to bind local test ports.
 
 ## Third-party code
 
@@ -380,4 +417,4 @@ docker exec secnote sh -c 'awk "/^(Uid|Gid|CapEff|CapBnd|NoNewPrivs):/" /proc/1/
 
 Expect UID/GID 65532, `NoNewPrivs: 1`, and only the low-port bind capability (`0000000000000400`) for default ports, or zero capabilities for high ports. Root is used for setup and the explicit TLS-copy refresh. The root entrypoint needs permission to change UID/GID and capabilities during initialization; it fails if privilege reduction cannot complete. Validate the public certificate chain, redirect, headers, and CI result for the release as well.
 
-RAM-only application storage does not disable swap, core dumps, VM snapshots, browser history, clipboard history, or recipients' ability to copy plaintext. The note is removed when the API accepts an authorized read, before delivery and browser decryption; a network failure can therefore lose the note. Physical removal of expired entries occurs on the cleanup interval, though expired notes cannot be read. Publish an instance privacy notice that matches your actual logs and infrastructure.
+RAM-only application storage disables core dumps and peer tracing for its own process, pins memory when permitted, and zeroizes stored ciphertext on release as defense in depth ([docs/ram-only.md](docs/ram-only.md)); it does not control host swap configuration, VM snapshots, transient request/response buffers, browser history, clipboard history, or recipients' ability to copy plaintext. The note is removed when the API accepts an authorized read, before delivery and browser decryption; a network failure can therefore lose the note. Physical removal of expired entries occurs on the cleanup interval, though expired notes cannot be read. Publish an instance privacy notice that matches your actual logs and infrastructure.
