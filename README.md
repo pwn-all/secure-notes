@@ -399,6 +399,12 @@ node tests/runtime-smoke.cjs --binary target/release/secure_notes
 
 The runtime smoke uses isolated temporary certificates and a test signing seed. It checks real TLS/HTTP2, Argon2id proof-of-work solved with the frontend implementation, signed API operations, burn protection, file-budget limits, the instance passport against the binary under test, live certificate reload, and the incomplete-header deadline. It requires Node.js with WebCrypto, OpenSSL, and permission to bind local test ports.
 
+The frontend uses only relative paths, so `website/` can be served from a domain root or under a path such as `/notes/`; the API itself always sits at the root of its origin. A browser check covers `https://domain.test/`, `https://sub.domain.test/`, `https://domain.test/notes/` and `https://sub.domain.test/notes/`: language files, service worker scope, the app manifest, sending and opening a note, offline reload, and that no request leaves the page directory except API calls. It needs Playwright with Chromium:
+
+```bash
+PLAYWRIGHT=/path/to/node_modules/playwright node tests/browser-paths.cjs --binary target/release/secure_notes
+```
+
 ## Third-party code
 
 [qrcode-svg](https://github.com/datalog/qrcode-svg) — MIT License. Copyright and license notice retained in this repository.

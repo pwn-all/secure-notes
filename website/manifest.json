@@ -2,7 +2,8 @@
   "name": "SecNote",
   "short_name": "SecNote",
   "description": "Zero-knowledge one-time encrypted notes. AES-256-GCM browser-side encryption. Burn after read.",
-  "start_url": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#111122",
   "theme_color": "#111122",
@@ -22,7 +23,7 @@
       "name": "New Note",
       "short_name": "New",
       "description": "Create a new encrypted note",
-      "url": "/"
+      "url": "./"
     }
   ]
 }

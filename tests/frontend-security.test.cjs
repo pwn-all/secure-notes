@@ -117,12 +117,12 @@ function makeDom() {
   return { document, element };
 }
 
-function frontend({ languages = ['en'], fetchImpl } = {}) {
+function frontend({ languages = ['en'], fetchImpl, href = 'https://notes.example/' } = {}) {
   const { document, element } = makeDom();
   const storage = new Map();
   const context = {
     window: { SECNOTE_CONFIG: {}, addEventListener() {} },
-    location: new URL('https://notes.example/'),
+    location: new URL(href),
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
     document,
     Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 }, NodeFilter: { SHOW_TEXT: 4 },
@@ -665,30 +665,112 @@ test('settings show the current server as one card and open the address form on 
   assert.equal(element('serverForm').hidden, true, 'connecting closes the form');
 });
 
-test('service worker caches only canonical public assets and bypasses API and arbitrary paths', async () => {
-  const events = {}, fetched = [], cached = [];
-  const cache = { put: async (key) => cached.push(key), match: async () => null };
+// The frontend must work wherever it is served: a domain root, a subdomain, or a path such as /notes/.
+const DEPLOYMENTS = ['https://domain.test/', 'https://sub.domain.test/', 'https://domain.test/notes/', 'https://sub.domain.test/notes/'];
+
+function serviceWorker(base, { offline = false } = {}) {
+  const events = {}, fetched = [], cached = new Map();
+  const cache = {
+    addAll: async urls => urls.forEach(u => cached.set(u, 'shell')),
+    put: async (key) => cached.set(key, 'fetched'),
+    match: async key => (cached.has(key) ? new Response('cached ' + key) : undefined),
+  };
+  const location = new URL('sw.js', base);
   const context = {
-    self: { location: { origin: 'https://notes.example' }, addEventListener: (name, fn) => { events[name] = fn; } },
-    URL, Response, caches: { open: async () => cache },
-    fetch: async (request) => { fetched.push(typeof request === 'string' ? request : request.url); return new Response('public asset'); },
+    self: { location, addEventListener: (name, fn) => { events[name] = fn; }, skipWaiting() {}, clients: { claim() {} } },
+    URL, Response, caches: { open: async () => cache, keys: async () => [], delete: async () => true },
+    fetch: async (request) => {
+      fetched.push(typeof request === 'string' ? request : request.url);
+      if (offline) throw new TypeError('offline');
+      return new Response('public asset');
+    },
   };
   vm.runInNewContext(readFileSync('website/sw.js', 'utf8'), context);
-  async function request(path) {
-    const waits = []; let result;
-    events.fetch({ request: { url: 'https://notes.example' + path, method: 'GET', mode: 'navigate' },
-      respondWith: promise => { result = promise; }, waitUntil: promise => waits.push(promise) });
-    await result; await Promise.all(waits);
+  async function install() {
+    let done; events.install({ waitUntil: promise => { done = promise; } }); await done;
   }
-  await request('/?p=secret-note-id&pin=public-key');
-  assert.deepEqual(fetched, ['https://notes.example/']);
-  assert.deepEqual(cached, ['https://notes.example/']);
-  await request('/info');
-  await request('/api/v1/init?scope=create');
-  await request('/private?token=secret');
-  assert.equal(cached.length, 1);
-  await request('/argon2.js');
-  assert.equal(cached.at(-1), 'https://notes.example/argon2.js', 'the PoW library is part of the offline shell');
+  async function request(url, mode = 'no-cors') {
+    const waits = []; let result;
+    events.fetch({ request: { url, method: 'GET', mode },
+      respondWith: promise => { result = promise; }, waitUntil: promise => waits.push(promise) });
+    const response = await result; await Promise.all(waits);
+    return response;
+  }
+  return { install, request, fetched, cached };
+}
+
+for (const base of DEPLOYMENTS) {
+  test(`service worker at ${base} caches its own shell and bypasses API, notes and other paths`, async () => {
+    const origin = new URL(base).origin;
+    const sw = serviceWorker(base);
+    await sw.install();
+    const shell = [...sw.cached.keys()];
+    assert.ok(shell.includes(base) && shell.includes(base + 'app.js') && shell.includes(base + 'argon2.js'), 'the shell is cached under the page directory');
+    assert.ok(shell.every(url => url.startsWith(base)), 'nothing outside the page directory is cached: ' + shell.join(' '));
+    sw.cached.clear();
+
+    await sw.request(base + '?p=secret-note-id&pin=public-key', 'navigate');
+    assert.deepEqual(sw.fetched, [base], 'a note link is fetched and cached without its query');
+    await sw.request(base + 'index.html?p=other-note');
+    assert.deepEqual([...sw.cached.keys()], [base], 'index.html shares the directory cache entry');
+
+    for (const passthrough of [origin + '/info', origin + '/api/v1/init?scope=create', base + 'private?token=secret',
+      'https://elsewhere.test/app.js', ...(base === origin + '/' ? [] : [origin + '/app.js'])]) {
+      await sw.request(passthrough);
+    }
+    assert.deepEqual([...sw.cached.keys()], [base], 'API calls, unknown paths and other directories are never cached');
+
+    await sw.request(base + 'langs/ru.json');
+    assert.ok(sw.cached.has(base + 'langs/ru.json'), 'language files are cached under the page directory');
+  });
+
+  test(`service worker at ${base} serves the cached page when offline`, async () => {
+    const sw = serviceWorker(base, { offline: true });
+    await sw.install();
+    const page = await sw.request(base + '?p=note#key', 'navigate');
+    assert.equal(await page.text(), 'cached ' + base);
+    const script = await sw.request(base + 'app.js');
+    assert.equal(await script.text(), 'cached ' + base + 'app.js');
+  });
+
+  test(`a link created at ${base} with the API on the same origin opens that same page`, async () => {
+    const { api, element } = frontend({ href: base });
+    api.setApiPubKey(fixture.pubkey);
+    api.prepareCreate();
+    api.disableWarmup();
+    const nid = Buffer.alloc(16, 2).toString('base64url');
+    api.mockFetchJson(async () => ({ response: { ok: true }, body: { ok: true, nid } }));
+    element('noteInput').value = 'path check';
+    await element('composer').handlers.submit({ preventDefault() {} });
+    const escaped = base.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+    assert.match(api.chatText(), new RegExp(escaped + '\\?p=' + nid + '&pin=' + fixture.pubkey + '#[A-Za-z0-9_-]{43}'));
+  });
+}
+
+test('a link for an external API opens that server, not this page path', async () => {
+  const { api, element } = frontend({ href: 'https://domain.test/notes/' });
+  element('apiInp').value = 'https://api.other.test|' + fixture.pubkey;
+  await element('saveSettings').handlers.click();
+  api.prepareCreate();
+  api.disableWarmup();
+  const nid = Buffer.alloc(16, 3).toString('base64url');
+  api.mockFetchJson(async () => ({ response: { ok: true }, body: { ok: true, nid } }));
+  element('noteInput').value = 'external';
+  await element('composer').handlers.submit({ preventDefault() {} });
+  assert.match(api.chatText(), new RegExp('https://api\\.other\\.test/\\?p=' + nid + '&pin=' + fixture.pubkey + '#'));
+});
+
+test('the page, manifest and service worker registration use only relative paths', () => {
+  const html = readFileSync('website/index.html', 'utf8');
+  const absolute = [...html.matchAll(/\b(?:src|href|content|action)="(\/(?!\/)[^"]*)"/g)].map(m => m[1]);
+  assert.deepEqual(absolute, [], 'root-relative URLs break a frontend served under a path');
+  assert.match(html, /<meta name="mobile-web-app-capable" content="yes">/);
+  const manifest = JSON.parse(readFileSync('website/manifest.json', 'utf8'));
+  const urls = [manifest.start_url, manifest.scope, ...manifest.icons.map(i => i.src), ...manifest.shortcuts.map(s => s.url)];
+  assert.ok(urls.every(u => !u.startsWith('/')), 'manifest URLs are relative: ' + urls.join(' '));
+  const register = readFileSync('website/sw-register.js', 'utf8');
+  assert.match(register, /register\('sw\.js'\)/);
+  assert.doesNotMatch(readFileSync('website/sw.js', 'utf8'), /['"]\/(?:app|styles|argon2|langs|index)/, 'the worker shell is relative');
 });
 
 test('certificate setup creates a private env file and safely preserves existing values', () => {

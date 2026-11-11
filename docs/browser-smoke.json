@@ -28,6 +28,11 @@
     "settings drawer with the server card and the address form",
     "recipient: pinned-key check, Argon2id pre-solve, read and destroy, decrypted text and file download"
   ],
+  "deployments": {
+    "checkedBy": "tests/browser-paths.cjs",
+    "bases": ["https://domain.test/", "https://sub.domain.test/", "https://domain.test/notes/", "https://sub.domain.test/notes/"],
+    "checks": ["language file", "service worker scope equals the page directory", "manifest start_url and scope", "send and open a note through the same-origin API", "offline reload from the service worker", "no request outside the page directory except the API"]
+  },
   "productionChecks": [
     "Docker image builds; container runs as UID/GID 65532 with NoNewPrivs and only the low-port bind capability",
     "signed /info passport reports dumpable=false, core dumps off, memory locked with --ulimit memlock=-1:-1",

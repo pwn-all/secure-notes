@@ -1352,12 +1352,17 @@ async function solvePoW(payload, onProgress) {
 }
 
 /* ── Share links ── */
+// The directory this page is served from: https://example.com/ or https://example.com/notes/.
+function pageBaseUrl() {
+  return new URL('./', location.href);
+}
+
 function buildHostedShareUrl(nid, keyB64) {
   const remoteBase = apiBase();
   if (/^https:\/\//.test(remoteBase) && !isLoopbackHostname(new URL(remoteBase).hostname)) {
-    const url = new URL(remoteBase);
-    url.pathname = '/';
-    url.search = '';
+    // The API sits at the root of its origin. When that is this page's origin, the link opens this
+    // page's directory (the frontend may live under a path); otherwise the API server's own frontend.
+    const url = remoteBase === pageDefaultApi() ? pageBaseUrl() : new URL('/', remoteBase);
     url.searchParams.set('p', nid);
     setPinQueryParam(url, apiPubKeyB64);
     url.hash = keyB64;
@@ -1368,9 +1373,7 @@ function buildHostedShareUrl(nid, keyB64) {
     return buildLocalShareUrl(nid, keyB64);
   }
 
-  const url = new URL(location.origin);
-  url.pathname = '/';
-  url.search = '';
+  const url = pageBaseUrl();
   url.searchParams.set('p', nid);
   setApiQueryParam(url, apiUrl, apiPubKeyB64);
   if (apiBase(url) === remoteBase) setPinQueryParam(url, apiPubKeyB64);
@@ -2816,7 +2819,8 @@ $('saveSettings').addEventListener('click', async () => {
 /* ── Runtime placeholder replacement (privacy policy, JSON-LD) ── */
 (() => {
   const host = location.host;
-  const origin = location.origin;
+  // The page's own address, including a sub-path such as /notes, without the trailing slash.
+  const origin = /^https?:$/.test(location.protocol) ? pageBaseUrl().href.replace(/\/$/, '') : location.origin;
   const email = 'legal@' + location.hostname;
   function repText(s) {
     return s.replace(/\[\[HOST_URL\]\]/g, origin)
