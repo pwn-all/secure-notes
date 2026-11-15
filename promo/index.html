@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SecNote promo film</title>
+<link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="style.css">
+<script src="i18n/en.js"></script>
+</head>
+<body>
+<div id="frame">
+  <div id="stage">
+    <canvas id="bg" width="1920" height="1080"></canvas>
+    <div id="scenes"></div>
+    <div class="vignette"></div>
+    <canvas id="fx" width="1920" height="1080"></canvas>
+  </div>
+</div>
+<div id="controls">
+  <button id="play" title="Play / pause (Space)">▶</button>
+  <input id="seek" type="range" min="0" max="119" step="0.0333" value="0" aria-label="Time">
+  <span class="tm" id="tm">0.00 / 0.00</span>
+  <span id="snd">preparing sound…</span>
+</div>
+<script src="../website/qrcode.min.js"></script>
+<script src="engine.js"></script>
+<script src="scenes.js"></script>
+<script src="audio.js"></script>
+<script>
+// Player. ?lang=xx loads i18n/xx.js over English, ?t=12.5 opens at a time, ?render=1 is the frame-exact mode for render.mjs.
+(async function () {
+  const q = new URLSearchParams(location.search), lang = (q.get('lang') || 'en').replace(/[^a-zA-Z-]/g, ''), render = q.has('render');
+  try {
+    if (render) document.body.classList.add('render');
+    if (lang !== 'en') await new Promise((ok, no) => {
+      const s = document.createElement('script'); s.src = `i18n/${lang}.js`; s.onload = ok; s.onerror = () => no(new Error(`i18n/${lang}.js not found`));
+      document.head.appendChild(s);
+    });
+    const merge = (a, b) => { const o = { ...a }; for (const k in b) o[k] = b[k] && typeof b[k] === 'object' && !Array.isArray(b[k]) ? merge(a[k] || {}, b[k]) : b[k]; return o; };
+    const S = merge(PROMO_I18N.en, PROMO_I18N[lang] || {});
+    document.documentElement.lang = lang;
+    await Promise.all([300, 400, 500, 600, 700, 800].map((w) => document.fonts.load(`${w} 40px Manrope`))
+      .concat([400, 500].map((w) => document.fonts.load(`${w} 20px "Roboto Mono"`))));
+    await document.fonts.ready;
+
+    const stage = document.getElementById('stage'), frame = document.getElementById('frame');
+    const fit = () => {
+      if (render) { P.k = 1; stage.style.transform = ''; return; }
+      const W = frame.clientWidth, H = frame.clientHeight, k = Math.min(W / 1920, H / 1080);
+      P.k = k; stage.style.transform = `translate(${(W - 1920 * k) / 2}px,${(H - 1080 * k) / 2}px) scale(${k})`;
+    };
+    fit(); addEventListener('resize', fit);
+    P.build(stage, S);
+    await Promise.all([...document.images].map((i) => i.decode().catch(() => {})));
+    P.seek(+q.get('t') || 0);
+    window.__ready = true;
+    if (render) return;
+
+    // ---- preview controls ----
+    const play = document.getElementById('play'), seek = document.getElementById('seek'), tm = document.getElementById('tm'), snd = document.getElementById('snd');
+    seek.max = P.total;
+    let playing = false, T = P.T, wall = 0;
+    const show = () => { P.seek(T); seek.value = T; tm.textContent = `${T.toFixed(2)} / ${P.total.toFixed(2)}`; };
+    const start = () => { if (T >= P.total - 0.05) T = 0; playing = true; play.textContent = '❚❚'; wall = performance.now() - T * 1000; if (P.audio.buffer) P.audio.play(T); };
+    const stop = () => { playing = false; play.textContent = '▶'; P.audio.stop(); };
+    const jump = (t) => { T = Math.max(0, Math.min(P.total, t)); if (playing) start(); show(); };
+    play.onclick = () => (playing ? stop() : start());
+    seek.oninput = () => jump(+seek.value);
+    addEventListener('keydown', (e) => {
+      if (e.code === 'Space') { e.preventDefault(); playing ? stop() : start(); }
+      if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') { e.preventDefault(); stop(); jump(T + (e.code === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 1 : 1 / 30)); }
+    });
+    (function loop() {
+      if (playing) {
+        T = P.audio.src ? P.audio.time() : (performance.now() - wall) / 1000;
+        if (T >= P.total) { T = P.total; stop(); }
+        show();
+      }
+      requestAnimationFrame(loop);
+    })();
+    show();
+    P.audio.render().then(() => { snd.textContent = '♪ sound ready'; if (playing) P.audio.play(T); }, (e) => { snd.textContent = 'sound failed: ' + e.message; });
+  } catch (e) {
+    window.__error = String(e && e.stack || e);
+    document.body.insertAdjacentHTML('beforeend', `<pre style="position:fixed;left:10px;top:10px;color:#f88;z-index:9">${window.__error}</pre>`);
+  }
+})();
+</script>
+</body>
+</html>
