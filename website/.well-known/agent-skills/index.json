@@ -1,11 +1,12 @@
 {
-  "$schema": "https://agentskills.io/schema/v0.2.0/index.schema.json",
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
   "skills": [
     {
       "name": "create-encrypted-note",
-      "type": "webmcp",
-      "description": "Create a zero-knowledge encrypted one-time note via the WebMCP browser API. The note is encrypted client-side with AES-256-GCM and permanently deleted after first read.",
-      "url": "/"
+      "type": "skill-md",
+      "description": "Share a password, API key, token or other secret as a SecNote one-time link that is encrypted on the client and destroyed after its first read, instead of pasting the secret into a chat, ticket or e-mail. Also reads (and thereby destroys) a note from a SecNote link.",
+      "url": "/.well-known/agent-skills/create-encrypted-note/SKILL.md",
+      "digest": "sha256:2ec828b472e77a5ed3a9f0ae1f7763c25c33f864962fe4a0ca0c6772c7f1f26c"
     }
   ]
 }

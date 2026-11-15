@@ -117,11 +117,11 @@ function makeDom() {
   return { document, element };
 }
 
-function frontend({ languages = ['en'], fetchImpl, href = 'https://notes.example/' } = {}) {
+function frontend({ languages = ['en'], fetchImpl, href = 'https://notes.example/', config = {} } = {}) {
   const { document, element } = makeDom();
   const storage = new Map();
   const context = {
-    window: { SECNOTE_CONFIG: {}, addEventListener() {} },
+    window: { SECNOTE_CONFIG: config, addEventListener() {} },
     location: new URL(href),
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
     document,
@@ -160,7 +160,8 @@ function frontend({ languages = ['en'], fetchImpl, href = 'https://notes.example
       limits: () => ({ maxPlaintextBytes, maxBlobBytes, maxFileBytes }),
       attachmentCount: () => attachments.length,
       chatText: () => $('chatLog').textContent,
-      isGateVisible, renderHealth, sharedLinkFromText, cancelGate,
+      isGateVisible, renderHealth, sharedLinkFromText, cancelGate, registerAgentTools,
+      mockCreateNote: fn => { createNote = fn; },
     };
   })();`, context, { filename: 'website/app.js' });
   return { api: context.window.security, context, element, storage };
@@ -758,6 +759,33 @@ test('a link for an external API opens that server, not this page path', async (
   element('noteInput').value = 'external';
   await element('composer').handlers.submit({ preventDefault() {} });
   assert.match(api.chatText(), new RegExp('https://api\\.other\\.test/\\?p=' + nid + '&pin=' + fixture.pubkey + '#'));
+});
+
+test('the WebMCP tool is off by default and registers with registerTool or the older provideContext', async () => {
+  const calls = [];
+  const modern = { registerTool: async (tool) => { calls.push(tool); } };
+  assert.equal(frontend().api.registerAgentTools(modern), false);
+  assert.equal(calls.length, 0);
+
+  const { api } = frontend({ config: { enableModelContextTools: true } });
+  assert.equal(api.registerAgentTools(undefined), false);
+  assert.equal(api.registerAgentTools(modern), true);
+  const legacy = [];
+  assert.equal(api.registerAgentTools({ provideContext: ({ tools }) => legacy.push(...tools) }), true);
+  assert.deepEqual([calls[0].name, legacy[0].name], ['create_encrypted_note', 'create_encrypted_note']);
+  assert.equal(calls[0].annotations.readOnlyHint, false);
+
+  const tool = calls[0];
+  api.mockCreateNote(async ({ text, ttl }) => ({ nid: 'n' + text.length + '_' + ttl, keyB64: 'K'.repeat(43) }));
+  const out = await tool.execute({ text: 'secret', ttl: 43200 });
+  assert.equal(out.note_id, 'n6_43200');
+  assert.equal(out.expires_in_hours, 12);
+  assert.match(out.link, /^https:\/\/notes\.example\/\?p=n6_43200(&|#)/);
+  assert.ok(out.link.endsWith('#' + 'K'.repeat(43)));
+  // failures reject (WebMCP turns a rejection into a tool error); a resolved { error } would read as success
+  await assert.rejects(tool.execute({ text: '  ' }), /text is required/);
+  await assert.rejects(tool.execute({ text: 'x', ttl: 60 }), /ttl must be/);
+  await assert.rejects(tool.execute({ text: 'x'.repeat(40000) }), /exceeds/);
 });
 
 test('the page, manifest and service worker registration use only relative paths', () => {

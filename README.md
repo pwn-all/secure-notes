@@ -363,7 +363,7 @@ Static files served from `website/`. The Rust backend handles only `/api/v1/*`, 
 | File | Purpose |
 |---|---|
 | `index.html` | App shell: chat log, composer, settings drawer, privacy policy and trust dialogs |
-| `app-config.js` | Empty runtime config — API URL auto-detects from `location.origin` |
+| `app-config.js` | Runtime config, empty by default: the API URL auto-detects from `location.origin`; `enableModelContextTools: true` turns on the WebMCP tool for browser AI agents |
 | `app.js` | Client logic: chat UI and commands, encryption (text and the `\0SNF` file envelope), PoW, signature checks, key pinning, i18n |
 | `pow-worker.js` | Argon2id proof-of-work solver (Web Worker) |
 | `argon2.js` | Argon2id / BLAKE2b in plain JavaScript (RFC 9106, no WebAssembly); used by the worker and the file:// fallback |
@@ -375,6 +375,17 @@ Static files served from `website/`. The Rust backend handles only `/api/v1/*`, 
 The frontend auto-connects to the API at its own origin — no configuration needed. Use `?api=https://other-host` to point at a different backend.
 
 Privacy Policy and contact email are rendered client-side from `location.host`, so self-hosted instances get the correct operator information without any setup.
+
+## AI agents
+
+Agents use the same REST API as the page. `website/index.md` describes it byte for byte (proof of work, share link format,
+errors), and the agent skill `website/.well-known/agent-skills/create-encrypted-note/SKILL.md` walks an agent through
+creating and reading a note with tested Python code. Discovery: `/llms.txt`, `/.well-known/agent-skills/index.json`
+([Agent Skills Discovery 0.2.0](https://github.com/cloudflare/agent-skills-discovery-rfc), with a SHA-256 digest of the
+skill that `tests/agent-discovery.test.cjs` keeps current), and the RFC 9727 catalog at `/.well-known/api-catalog`,
+announced in a `Link` header on the home page and on the catalog itself. In a browser with WebMCP, the page registers
+the tool `create_encrypted_note` through `document.modelContext.registerTool()` when the operator sets
+`enableModelContextTools: true` in `app-config.js`. There is no MCP server.
 
 ## Self-hosting
 

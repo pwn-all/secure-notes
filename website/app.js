@@ -3200,6 +3200,52 @@ async function route() {
   }
 }
 
+// WebMCP (webmachinelearning.github.io/webmcp): document.modelContext.registerTool(); early Chrome builds had
+// navigator.modelContext.provideContext(). Off unless app-config.js sets enableModelContextTools: true.
+// A rejected execute() is how a tool reports failure, so errors are thrown, not returned.
+function registerAgentTools(modelContext) {
+  if (!ENABLE_MODEL_CONTEXT_TOOLS || !modelContext) return false;
+  const tool = {
+    name: 'create_encrypted_note',
+    title: 'Create a one-time encrypted note',
+    description: 'Create a zero-knowledge encrypted one-time note. Encrypted client-side with AES-256-GCM. Returns a shareable link that can only be opened once, after which the note is permanently destroyed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'The text content to encrypt and send (max 32768 UTF-8 bytes by default).',
+          maxLength: DEFAULT_MAX_PLAINTEXT_BYTES,
+        },
+        ttl: {
+          type: 'integer',
+          enum: [43200, 86400],
+          description: 'Time-to-live in seconds: 43200 (12 hours) or 86400 (24 hours). Defaults to 86400.',
+          default: 86400,
+        },
+      },
+      required: ['text'],
+    },
+    annotations: { readOnlyHint: false },
+    execute: async ({ text, ttl = 86400 } = {}) => {
+      if (typeof text !== 'string' || !text.trim()) throw new Error('text is required');
+      if (plaintextByteLength(text) > maxPlaintextBytes) throw new Error('text exceeds ' + maxPlaintextBytes + ' bytes');
+      if (ttl !== 43200 && ttl !== 86400) throw new Error('ttl must be 43200 or 86400');
+      const { nid, keyB64 } = await createNote({ text, files: [], ttl });
+      return { link: buildHostedShareUrl(nid, keyB64), note_id: nid, expires_in_hours: ttl / 3600 };
+    },
+  };
+  try {
+    const done = typeof modelContext.registerTool === 'function'
+      ? modelContext.registerTool(tool)
+      : modelContext.provideContext({ tools: [tool] });
+    if (done && typeof done.catch === 'function') done.catch(() => {});
+    return true;
+  } catch {
+    return false; // the page works without the tool
+  }
+}
+
 window.addEventListener('popstate', () => route());
 
 /* ── Start ── */
@@ -3215,46 +3261,7 @@ setInterval(() => {
   if (document.visibilityState !== 'hidden') pingApi(apiUrl);
 }, HEALTH_INTERVAL_MS);
 
-/* ── WebMCP: expose note creation to browser AI agents ── */
-if (ENABLE_MODEL_CONTEXT_TOOLS && typeof navigator !== 'undefined' && navigator.modelContext) {
-  navigator.modelContext.provideContext({
-    tools: [{
-      name: 'create_encrypted_note',
-      description: 'Create a zero-knowledge encrypted one-time note. Encrypted client-side with AES-256-GCM. Returns a shareable link that can only be opened once, after which the note is permanently destroyed.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          text: {
-            type: 'string',
-            description: 'The text content to encrypt and send (max 32768 UTF-8 bytes by default).',
-            maxLength: DEFAULT_MAX_PLAINTEXT_BYTES,
-          },
-          ttl: {
-            type: 'integer',
-            enum: [43200, 86400],
-            description: 'Time-to-live in seconds: 43200 (12 hours) or 86400 (24 hours). Defaults to 86400.',
-            default: 86400,
-          },
-        },
-        required: ['text'],
-      },
-      execute: async ({ text, ttl = 86400 }) => {
-        if (!text || !text.trim()) return { error: 'text is required' };
-        if (plaintextByteLength(text) > maxPlaintextBytes) return { error: 'text exceeds ' + maxPlaintextBytes + ' bytes' };
-        if (ttl !== 43200 && ttl !== 86400) return { error: 'ttl must be 43200 or 86400' };
-        try {
-          const { nid, keyB64 } = await createNote({ text, files: [], ttl });
-          return {
-            link: buildHostedShareUrl(nid, keyB64),
-            note_id: nid,
-            expires_in_hours: ttl / 3600,
-          };
-        } catch (err) {
-          return { error: err.message || 'unknown error' };
-        }
-      },
-    }],
-  });
-}
+/* ── WebMCP: expose note creation to browser AI agents (operator opt-in) ── */
+registerAgentTools(document.modelContext || navigator.modelContext);
 
 })();

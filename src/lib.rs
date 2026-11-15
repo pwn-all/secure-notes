@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
     body::{Body, to_bytes},
     extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State},
-    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header, uri::Authority},
+    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header, uri::Authority},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -1346,24 +1346,34 @@ async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response
     response
 }
 
-async fn api_catalog_handler(headers: HeaderMap) -> Response {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .and_then(sanitize_authority)
+// HTTP/2 carries the host in the request URI (:authority) and has no Host header; HTTP/1.1 sends Host.
+fn catalog_base(uri: &Uri, headers: &HeaderMap) -> String {
+    let host = uri
+        .authority()
+        .and_then(|a| sanitize_authority(a.as_str()))
+        .or_else(|| {
+            headers
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .and_then(sanitize_authority)
+        })
         .unwrap_or_else(|| "localhost".to_owned());
     let host = host.strip_suffix(":443").unwrap_or(&host);
-    let base = format!("https://{}", host);
+    format!("https://{}", host)
+}
+
+async fn api_catalog_handler(uri: Uri, headers: HeaderMap) -> Response {
+    let base = catalog_base(&uri, &headers);
+    // RFC 9727: one entry for the API; index.md is this instance's agent-readable description of it.
     let catalog = serde_json::json!({
         "linkset": [
             {
-                "anchor": &base,
-                "api-catalog": [{"href": format!("{}/.well-known/api-catalog", base)}]
-            },
-            {
                 "anchor": format!("{}/api/v1", base),
-                "service-doc": [{"href": "https://github.com/pwn-all/secure-notes", "title": "SecNote API Documentation"}],
-                "status": [{"href": format!("{}/info", base)}]
+                "service-doc": [
+                    {"href": format!("{}/index.md", base), "type": "text/markdown", "title": "SecNote REST API"},
+                    {"href": "https://github.com/pwn-all/secure-notes#api", "type": "text/html", "title": "SecNote API reference"}
+                ],
+                "status": [{"href": format!("{}/info", base), "type": "application/json"}]
             }
         ]
     });
@@ -1371,7 +1381,13 @@ async fn api_catalog_handler(headers: HeaderMap) -> Response {
     *res.status_mut() = StatusCode::OK;
     res.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("application/linkset+json"),
+        HeaderValue::from_static(
+            r#"application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727""#,
+        ),
+    );
+    res.headers_mut().insert(
+        header::LINK,
+        HeaderValue::from_static(r#"</.well-known/api-catalog>; rel="api-catalog""#),
     );
     res
 }
@@ -3596,6 +3612,59 @@ mod tests {
             let per = started.elapsed() / iterations;
             println!("argon2id m={m_kib} KiB t=1: {per:?} per evaluation");
         }
+    }
+
+    #[tokio::test]
+    async fn api_catalog_follows_rfc_9727() {
+        for method in [Method::GET, Method::HEAD] {
+            let app = build_router(AppState::new(test_config()));
+            let request = Request::builder()
+                .method(method.clone())
+                .uri("/.well-known/api-catalog")
+                .header(header::HOST, "notes.example.com")
+                .extension(ConnectInfo(
+                    "203.0.113.10:40000".parse::<SocketAddr>().unwrap(),
+                ))
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                r#"application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727""#
+            );
+            assert_eq!(
+                response.headers()[header::LINK],
+                r#"</.well-known/api-catalog>; rel="api-catalog""#
+            );
+            if method == Method::GET {
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                let entry = &body["linkset"][0];
+                assert_eq!(entry["anchor"], "https://notes.example.com/api/v1");
+                assert_eq!(
+                    entry["service-doc"][0]["href"],
+                    "https://notes.example.com/index.md"
+                );
+                assert_eq!(entry["status"][0]["href"], "https://notes.example.com/info");
+            }
+        }
+    }
+
+    #[test]
+    fn api_catalog_base_uses_the_http2_authority_and_the_http1_host() {
+        let mut host = HeaderMap::new();
+        host.insert(header::HOST, HeaderValue::from_static("notes.example.com"));
+        let h2: Uri = "https://Notes.Example.com:443/.well-known/api-catalog"
+            .parse()
+            .unwrap();
+        let h1: Uri = "/.well-known/api-catalog".parse().unwrap();
+        assert_eq!(
+            catalog_base(&h2, &HeaderMap::new()),
+            "https://notes.example.com"
+        );
+        assert_eq!(catalog_base(&h1, &host), "https://notes.example.com");
+        assert_eq!(catalog_base(&h1, &HeaderMap::new()), "https://localhost");
     }
 
     #[test]

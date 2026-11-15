@@ -1,0 +1,15 @@
+# SecNote
+
+> One-time, end-to-end encrypted notes. The client encrypts with AES-256-GCM, the server keeps only the ciphertext, in RAM, and deletes a note on its first read. No accounts; creating and reading a note need an Argon2id proof of work.
+
+Use it to hand over a password, API key or token as a one-time link instead of pasting the secret into a chat, ticket or e-mail.
+
+## For agents
+
+- [REST API](index.md): endpoints, proof of work, share link format, errors
+- [Agent skill](/.well-known/agent-skills/create-encrypted-note/SKILL.md): create and read a note step by step, with Python code
+- [API catalog](/.well-known/api-catalog): RFC 9727 linkset of this instance
+
+## Optional
+
+- [Source code and README](https://github.com/pwn-all/secure-notes)
